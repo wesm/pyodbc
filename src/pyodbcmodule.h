@@ -46,17 +46,15 @@ extern PyTypeObject RowType;
 extern PyTypeObject CursorType;
 extern PyTypeObject ConnectionType;
 
-// Thd pyodbc module.
-extern PyObject* pModule;
+PyObject* GetModule();
 
 inline bool lowercase()
 {
-    return PyObject_GetAttrString(pModule, "lowercase") == Py_True;
+    return PyObject_IsTrue(PyObject_GetAttrString(GetModule(), "lowercase")) == 1;
 }
 
 extern char chDecimal;
 extern char chGroupSeparator;
 extern char chCurrencySymbol;
-
 
 #endif // _PYPGMODULE_H

@@ -23,14 +23,6 @@
 #include <time.h>
 #include <stdarg.h>
 
-static PyObject* MakeConnectionString(PyObject* existing, PyObject* parts);
-
-_typeobject* OurDateTimeType = 0;
-_typeobject* OurDateType = 0;
-_typeobject* OurTimeType = 0;
-
-PyObject* pModule = 0;
-
 static char module_doc[] =
     "A DB API 2.0 module for ODBC databases.\n"
     "\n"
@@ -65,6 +57,12 @@ static char module_doc[] =
     "  The string constant 'qmark' to indicate parameters are identified using\n"
     "  question marks.";
 
+static PyObject* MakeConnectionString(PyObject* existing, PyObject* parts);
+
+_typeobject* OurDateTimeType = 0;
+_typeobject* OurDateType = 0;
+_typeobject* OurTimeType = 0;
+
 PyObject* Error;
 PyObject* Warning;
 PyObject* InterfaceError;
@@ -88,10 +86,10 @@ struct ExcInfo
 #define MAKEEXCINFO(name, parent, doc) { #name, "pyodbc." #name, &name, &parent, doc }
 
 static ExcInfo aExcInfos[] = {
-    MAKEEXCINFO(Error, PyExc_StandardError, 
+    MAKEEXCINFO(Error, PyExc_Exception, 
                 "Exception that is the base class of all other error exceptions. You can use\n"
                 "this to catch all errors with one single 'except' statement."),
-    MAKEEXCINFO(Warning, PyExc_StandardError,
+    MAKEEXCINFO(Warning, PyExc_Exception,
                 "Exception raised for important warnings like data truncations while inserting,\n"
                 " etc."),
     MAKEEXCINFO(InterfaceError, Error,
@@ -150,10 +148,12 @@ static void init_locale_info()
         return;
     }
 
+    /*
+
     PyObject* value = PyDict_GetItemString(ldict, "decimal_point");
-    if (value && PyString_Check(value) && PyString_Size(value) == 1)
+    if (value && PyUnicode_Check(value) && PyUnicode_GetSize(value) == 1)
     {
-        chDecimal = PyString_AsString(value)[0];
+        chDecimal = PyUnicode_AsUnicode(value)[0];
     }
         
     value = PyDict_GetItemString(ldict, "thousands_sep");
@@ -174,6 +174,7 @@ static void init_locale_info()
     {
         chCurrencySymbol = PyString_AsString(value)[0];
     }
+    */
 }
 
 
@@ -222,9 +223,12 @@ static bool import_types()
 
 static bool AllocateEnv()
 {
-    PyObject* pooling = PyObject_GetAttrString(pModule, "pooling");
-    bool bPooling = pooling == Py_True;
-    Py_DECREF(pooling);
+    // REVIEW: Need globals.
+    bool bPooling = true;
+
+    // PyObject* pooling = PyObject_GetAttrString(pModule, "pooling");
+    // bool bPooling = pooling == Py_True;
+    // Py_DECREF(pooling);
 
     if (bPooling)
     {
@@ -271,12 +275,12 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
 {
     UNUSED(self);
     
-    Object pConnectString = 0;
+    Object cnxnstring;
     int fAutoCommit = 0;
     int fAnsi = 0;              // force ansi
     int fUnicodeResults = 0;
 
-    int size = args ? PyTuple_Size(args) : 0;
+    Py_ssize_t size = args ? PyTuple_Size(args) : 0;
 
     if (size > 1)
     {
@@ -286,21 +290,18 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
 
     if (size == 1)
     {
-        if (!PyString_Check(PyTuple_GET_ITEM(args, 0)) && !PyUnicode_Check(PyTuple_GET_ITEM(args, 0)))
+        cnxnstring.AttachAndRef(PyTuple_GetItem(args, 0));
+        if (!PyUnicode_Check(cnxnstring))
             return PyErr_Format(PyExc_TypeError, "argument 1 must be a string or unicode object");
-
-        pConnectString.Attach(PyUnicode_FromObject(PyTuple_GetItem(args, 0)));
-        if (!pConnectString.IsValid())
-            return 0;
     }
 
     if (kwargs && PyDict_Size(kwargs) > 0)
     {
+        // We'll copy all of the non-pyoodbc keywords to a separate dictionary and then append them to the connection
+        // string.
         Object partsdict(PyDict_New());
         if (!partsdict.IsValid())
             return 0;
-
-        Object unicodeT;            // used to temporarily hold Unicode objects if we have to convert values to unicode
 
         Py_ssize_t pos = 0;
         PyObject* key = 0;
@@ -312,37 +313,25 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
 
             // Check for the two non-connection string keywords we accept.  (If we get many more of these, create something
             // table driven.  Are we sure there isn't a Python function to parse keywords but leave those it doesn't know?)
-            const char* szKey = PyString_AsString(key);
-
-            if (_strcmpi(szKey, "autocommit") == 0)
+            if (PyUnicode_CompareWithASCIIString(key, "autocommit") == 0)
             {
                 fAutoCommit = PyObject_IsTrue(value);
-                continue;
-            }
-            if (_strcmpi(szKey, "ansi") == 0)
-            {
-                fAnsi = PyObject_IsTrue(value);
-                continue;
-            }
-            if (_strcmpi(szKey, "unicode_results") == 0)
-            {
-                fUnicodeResults = PyObject_IsTrue(value);
                 continue;
             }
         
             // Anything else must be a string that is appended, along with the keyword to the connection string.
 
-            if (!(PyString_Check(value) || PyUnicode_Check(value)))
-                return PyErr_Format(PyExc_TypeError, "'%s' is not a string or unicode value'", szKey);
-
+            if (!PyUnicode_Check(value))
+                return PyErr_Format(PyExc_TypeError, "DSN keyword values must be strings: %R=%R", key, value);
+                    
             // Map DB API recommended names to ODBC names (e.g. user --> uid).
             for (int i = 0; i < _countof(keywordmaps); i++)
             {
-                if (_strcmpi(szKey, keywordmaps[i].oldname) == 0)
+                if (PyUnicode_CompareWithASCIIString(key, keywordmaps[i].oldname) == 0)
                 {
                     if (keywordmaps[i].newnameObject == 0)
                     {
-                        keywordmaps[i].newnameObject = PyString_FromString(keywordmaps[i].newname);
+                        keywordmaps[i].newnameObject = PyUnicode_FromString(keywordmaps[i].newname);
                         if (keywordmaps[i].newnameObject == 0)
                             return 0;
                     }
@@ -352,25 +341,20 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
                 }
             }
 
-            if (PyString_Check(value))
-            {
-                unicodeT.Attach(PyUnicode_FromObject(value));
-                if (!unicodeT.IsValid())
-                    return 0;
-                value = unicodeT.Get();
-            }
-
             if (PyDict_SetItem(partsdict.Get(), key, value) == -1)
                 return 0;
-
-            unicodeT.Detach();
         }
 
         if (PyDict_Size(partsdict.Get()))
-            pConnectString.Attach(MakeConnectionString(pConnectString.Get(), partsdict));
+        {
+            cnxnstring.Attach(MakeConnectionString(cnxnstring.Get(), partsdict));
+            if (!cnxnstring)
+                return 0;
+        }
+        
     }
     
-    if (!pConnectString.IsValid())
+    if (!cnxnstring.IsValid())
         return PyErr_Format(PyExc_TypeError, "no connection information was passed");
 
     if (henv == SQL_NULL_HANDLE)
@@ -379,7 +363,7 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
             return 0;
     }
      
-    return (PyObject*)Connection_New(pConnectString.Get(), fAutoCommit != 0, fAnsi != 0, fUnicodeResults != 0);
+    return (PyObject*)Connection_New(cnxnstring.Get(), fAutoCommit != 0, fAnsi != 0, fUnicodeResults != 0);
 }
 
 
@@ -412,7 +396,7 @@ mod_datasources(PyObject* self)
         if (!SQL_SUCCEEDED(ret))
             break;
         
-        PyDict_SetItemString(result, (const char*)szDSN, PyString_FromString((const char*)szDesc));
+        PyDict_SetItemString(result, (const char*)szDSN, PyUnicode_FromString((const char*)szDesc));
         nDirection = SQL_FETCH_NEXT;
     }
     
@@ -444,9 +428,7 @@ mod_timefromticks(PyObject* self, PyObject* args)
     if (!PyArg_ParseTuple(args, "O", &num))
         return 0;
     
-    if (PyInt_Check(num))
-        t = PyInt_AS_LONG(num);
-    else if (PyLong_Check(num))
+    if (PyLong_Check(num))
         t = PyLong_AsLong(num);
     else if (PyFloat_Check(num))
         t = (long)PyFloat_AS_DOUBLE(num);
@@ -814,8 +796,22 @@ static const ConstantDef aConstants[] = {
     MAKECONST(SQL_XOPEN_CLI_YEAR),
 };
 
+static struct PyModuleDef pyodbc_module =
+{
+    PyModuleDef_HEAD_INIT,
+    "pyodbc",  
+    module_doc,
+    -1,
+    pyodbc_methods
+};
 
-static bool CreateExceptions()
+PyObject* GetModule()
+{
+    // REVIEW: refcount?
+    return PyState_FindModule(&pyodbc_module);
+}
+
+static bool CreateExceptions(PyObject* pModule)
 {
     for (unsigned int i = 0; i < _countof(aExcInfos); i++)
     {
@@ -825,7 +821,7 @@ static bool CreateExceptions()
         if (!classdict)
             return false;
 
-        PyObject* doc = PyString_FromString(info.szDoc);
+        PyObject* doc = PyUnicode_FromString(info.szDoc);
         if (!doc)
         {
             Py_DECREF(classdict);
@@ -851,9 +847,7 @@ static bool CreateExceptions()
     return true;
 }
 
-
-PyMODINIT_FUNC
-initpyodbc()
+PyObject* PyInit_pyodbc()
 {
 #ifdef _DEBUG
     #ifndef Py_REF_DEBUG
@@ -867,17 +861,17 @@ initpyodbc()
     ErrorInit();
 
     if (PyType_Ready(&ConnectionType) < 0 || PyType_Ready(&CursorType) < 0 || PyType_Ready(&RowType) < 0 || PyType_Ready(&CnxnInfoType) < 0)
-        return;
+        return 0;
 
-    pModule = Py_InitModule4("pyodbc", pyodbc_methods, module_doc, NULL, PYTHON_API_VERSION);
+    PyObject* module = PyModule_Create(&pyodbc_module);
 
     if (!import_types())
-        return;
+        return 0;
 
     init_locale_info();
 
-    if (!CreateExceptions())
-        return;
+    if (!CreateExceptions(module))
+        return 0;
 
     // The 'build' version number is a beta identifier.  For example, if it is 7, then we are on beta7 of the
     // (major,minor.micro) version.  On Windows, we poke these values into the DLL's version resource, so when we make
@@ -886,59 +880,57 @@ initpyodbc()
 
     PyObject* pVersion;
     if (PYODBC_BUILD == 9999)
-        pVersion = PyString_FromFormat("%d.%d.%d", PYODBC_MAJOR, PYODBC_MINOR, PYODBC_MICRO);
+        pVersion = PyUnicode_FromFormat("%d.%d.%d", PYODBC_MAJOR, PYODBC_MINOR, PYODBC_MICRO);
     else
-        pVersion = PyString_FromFormat("%d.%d.%d-beta%d", PYODBC_MAJOR, PYODBC_MINOR, PYODBC_MICRO, PYODBC_BUILD);
-    PyModule_AddObject(pModule, "version", pVersion);
+        pVersion = PyUnicode_FromFormat("%d.%d.%d-beta%d", PYODBC_MAJOR, PYODBC_MINOR, PYODBC_MICRO, PYODBC_BUILD);
+    PyModule_AddObject(module, "version", pVersion);
 
-    PyModule_AddIntConstant(pModule, "threadsafety", 1);
-    PyModule_AddStringConstant(pModule, "apilevel", "2.0");
-    PyModule_AddStringConstant(pModule, "paramstyle", "qmark");
-    PyModule_AddObject(pModule, "pooling", Py_True);
+    PyModule_AddIntConstant(module, "threadsafety", 1);
+    PyModule_AddStringConstant(module, "apilevel", "2.0");
+    PyModule_AddStringConstant(module, "paramstyle", "qmark");
+    PyModule_AddObject(module, "pooling", Py_True);
     Py_INCREF(Py_True);
-    PyModule_AddObject(pModule, "lowercase", Py_False);
+    PyModule_AddObject(module, "lowercase", Py_False);
     Py_INCREF(Py_False);
                        
-    PyModule_AddObject(pModule, "Connection", (PyObject*)&ConnectionType);
+    PyModule_AddObject(module, "Connection", (PyObject*)&ConnectionType);
     Py_INCREF((PyObject*)&ConnectionType);
-    PyModule_AddObject(pModule, "Cursor", (PyObject*)&CursorType);
+    PyModule_AddObject(module, "Cursor", (PyObject*)&CursorType);
     Py_INCREF((PyObject*)&CursorType);
-    PyModule_AddObject(pModule, "Row", (PyObject*)&RowType);
+    PyModule_AddObject(module, "Row", (PyObject*)&RowType);
     Py_INCREF((PyObject*)&RowType);
 
     // Add the SQL_XXX defines from ODBC.
     for (unsigned int i = 0; i < _countof(aConstants); i++)
-        PyModule_AddIntConstant(pModule, (char*)aConstants[i].szName, aConstants[i].value);
+        PyModule_AddIntConstant(module, (char*)aConstants[i].szName, aConstants[i].value);
 
-    PyModule_AddObject(pModule, "Date", (PyObject*)PyDateTimeAPI->DateType);
+    PyModule_AddObject(module, "Date", (PyObject*)PyDateTimeAPI->DateType);
     Py_INCREF((PyObject*)PyDateTimeAPI->DateType);
-    PyModule_AddObject(pModule, "Time", (PyObject*)PyDateTimeAPI->TimeType);
+    PyModule_AddObject(module, "Time", (PyObject*)PyDateTimeAPI->TimeType);
     Py_INCREF((PyObject*)PyDateTimeAPI->TimeType);
-    PyModule_AddObject(pModule, "Timestamp", (PyObject*)PyDateTimeAPI->DateTimeType);
+    PyModule_AddObject(module, "Timestamp", (PyObject*)PyDateTimeAPI->DateTimeType);
     Py_INCREF((PyObject*)PyDateTimeAPI->DateTimeType);
-    PyModule_AddObject(pModule, "DATETIME", (PyObject*)PyDateTimeAPI->DateTimeType);
+    PyModule_AddObject(module, "DATETIME", (PyObject*)PyDateTimeAPI->DateTimeType);
     Py_INCREF((PyObject*)PyDateTimeAPI->DateTimeType);
-    PyModule_AddObject(pModule, "STRING", (PyObject*)&PyString_Type);
-    Py_INCREF((PyObject*)&PyString_Type);
-    PyModule_AddObject(pModule, "NUMBER", (PyObject*)&PyFloat_Type);
+    PyModule_AddObject(module, "STRING", (PyObject*)&PyUnicode_Type);
+    Py_INCREF((PyObject*)&PyUnicode_Type);
+    PyModule_AddObject(module, "NUMBER", (PyObject*)&PyFloat_Type);
     Py_INCREF((PyObject*)&PyFloat_Type);
-    PyModule_AddObject(pModule, "ROWID", (PyObject*)&PyInt_Type);
-    Py_INCREF((PyObject*)&PyInt_Type);
-    PyModule_AddObject(pModule, "BINARY", (PyObject*)&PyBuffer_Type);
-    Py_INCREF((PyObject*)&PyBuffer_Type);
-    PyModule_AddObject(pModule, "Binary", (PyObject*)&PyBuffer_Type);
-    Py_INCREF((PyObject*)&PyBuffer_Type);
+    PyModule_AddObject(module, "ROWID", (PyObject*)&PyLong_Type);
+    Py_INCREF((PyObject*)&PyLong_Type);
+    PyModule_AddObject(module, "BINARY", (PyObject*)&PyBytes_Type);
+    Py_INCREF((PyObject*)&PyBytes_Type);
+    PyModule_AddObject(module, "Binary", (PyObject*)&PyBytes_Type);
+    Py_INCREF((PyObject*)&PyBytes_Type);
     
     if (PyErr_Occurred())
         ErrorCleanup();
+
+    return module;
 }
 
 #ifdef WINVER
-BOOL WINAPI DllMain(
-  HINSTANCE hMod,
-  DWORD fdwReason,
-  LPVOID lpvReserved
-  )
+BOOL WINAPI DllMain(HINSTANCE hMod, DWORD fdwReason, LPVOID lpvReserved)
 {
     UNUSED(hMod, fdwReason, lpvReserved);
     return TRUE;
@@ -950,17 +942,17 @@ static PyObject* MakeConnectionString(PyObject* existing, PyObject* parts)
     // Creates a connection string from an optional existing connection string plus a dictionary of keyword value
     // pairs.  The keywords must be String objects and the values must be Unicode objects.
 
-    int length = 0;
+    Py_ssize_t length = 0;
     if (existing)
-        length = PyUnicode_GET_SIZE(existing) + 1; // + 1 to add a trailing 
+        length = PyUnicode_GET_SIZE(existing) + 1; // + 1 to add a trailing ;
 
-    Py_ssize_t pos = 0;
-    PyObject* key = 0;
-    PyObject* value = 0;
+    Py_ssize_t pos   = 0;
+    PyObject*  key   = 0;
+    PyObject*  value = 0;
 
     while (PyDict_Next(parts, &pos, &key, &value))
     {
-        length += PyString_GET_SIZE(key) + 1 + PyUnicode_GET_SIZE(value) + 1; // key=value;
+        length += PyUnicode_GET_SIZE(key) + 1 + PyUnicode_GET_SIZE(value) + 1; // key=value;
     }
     
     PyObject* result = PyUnicode_FromUnicode(0, length);
@@ -968,7 +960,7 @@ static PyObject* MakeConnectionString(PyObject* existing, PyObject* parts)
         return 0;
 
     Py_UNICODE* buffer = PyUnicode_AS_UNICODE(result);
-    int offset = 0;
+    Py_ssize_t offset = 0;
 
     if (existing)
     {
@@ -980,8 +972,8 @@ static PyObject* MakeConnectionString(PyObject* existing, PyObject* parts)
     pos = 0;
     while (PyDict_Next(parts, &pos, &key, &value))
     {
-        const char* szKey = PyString_AS_STRING(key);
-        for (int i = 0; i < PyString_GET_SIZE(key); i++)
+        const Py_UNICODE* szKey = PyUnicode_AS_UNICODE(key);
+        for (int i = 0; i < PyUnicode_GET_SIZE(key); i++)
             buffer[offset++] = (Py_UNICODE)szKey[i];
 
         buffer[offset++] = (Py_UNICODE)'=';

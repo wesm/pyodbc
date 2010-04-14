@@ -38,12 +38,9 @@ typedef unsigned long long UINT64;
 #define PY_SSIZE_T_CLEAN 1
 
 #include <Python.h>
-#include <stringobject.h>
-#include <intobject.h>
 #include <floatobject.h>
 #include <longobject.h>
 #include <boolobject.h>
-#include <bufferobject.h>
 #include <unicodeobject.h>
 #include <structmember.h>
 #include <datetime.h>

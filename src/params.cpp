@@ -8,6 +8,9 @@
 #include "wrapper.h"
 #include "errors.h"
 #include "dbspecific.h"
+#include "sqlwchar.h"
+
+static PyObject decimalFormat;
 
 inline Connection* GetConnection(Cursor* cursor)
 {
@@ -77,8 +80,9 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
     // allocate an array and use it instead of the original sequence.  Since we don't change ownership we don't bother
     // with incref.  (That is, PySequence_GetItem will INCREF and ~ObjectArrayHolder will DECREF.)
 
-    int        params_offset = skip_first ? 1 : 0;
-    Py_ssize_t cParams       = original_params == 0 ? 0 : PySequence_Length(original_params) - params_offset;
+    int params_offset = skip_first ? 1 : 0;
+
+    SQLSMALLINT cParams = (SQLSMALLINT)(original_params == 0 ? 0 : PySequence_Length(original_params) - params_offset);
 
     PyObject** params = (PyObject**)malloc(sizeof(PyObject*) * cParams);
     if (!params)
@@ -87,7 +91,7 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
         return 0;
     }
     
-    for (Py_ssize_t i = 0; i < cParams; i++)
+    for (SQLSMALLINT i = 0; i < cParams; i++)
         params[i] = PySequence_GetItem(original_params, i + params_offset);
 
     ObjectArrayHolder holder(cParams, params);
@@ -103,28 +107,15 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
         SQLRETURN ret;
         SQLSMALLINT cParamsT = 0;
         const char* szErrorFunc = "SQLPrepare";
-        if (PyString_Check(pSql))
+        SQLWChar sql(pSql);
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLPrepareW(cur->hstmt, sql, SQL_NTS);
+        if (SQL_SUCCEEDED(ret))
         {
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLPrepare(cur->hstmt, (SQLCHAR*)PyString_AS_STRING(pSql), SQL_NTS);
-            if (SQL_SUCCEEDED(ret))
-            {
-                szErrorFunc = "SQLNumParams";
-                ret = SQLNumParams(cur->hstmt, &cParamsT);
-            }
-            Py_END_ALLOW_THREADS
+            szErrorFunc = "SQLNumParams";
+            ret = SQLNumParams(cur->hstmt, &cParamsT);
         }
-        else
-        {
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLPrepareW(cur->hstmt, (SQLWCHAR*)PyUnicode_AsUnicode(pSql), SQL_NTS);
-            if (SQL_SUCCEEDED(ret))
-            {
-                szErrorFunc = "SQLNumParams";
-                ret = SQLNumParams(cur->hstmt, &cParamsT);
-            }
-            Py_END_ALLOW_THREADS
-        }
+        Py_END_ALLOW_THREADS
   
         if (cur->cnxn->hdbc == SQL_NULL_HANDLE)
         {
@@ -156,14 +147,25 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
     // Convert parameters if necessary
     //
 
-    // Calculate the amount of memory we need for param_buffer.  We can't allow it to reallocate on the fly since
-    // we will bind directly into its memory.  (We only use a vector so its destructor will free the memory.)
-    // We'll set aside one SQLLEN for each column to be used as the StrLen_or_IndPtr.
+    // Calculate the amount of memory we need for param_buffer.  We can't allow it to reallocate on the fly since we
+    // will bind directly into its memory.  We'll set aside one SQLLEN for each column to be used as the
+    // StrLen_or_IndPtr.
 
     int cb = 0;
 
     for (Py_ssize_t i = 0; i < cParams; i++)
     {
+        if (PyDecimal_Check(params[i]))
+        {
+            Object str(PyObject_CallMethod(params[i], "__format__", "s", "f"));
+            if (!str)
+                return false;
+
+            // Note: The variable `holder` has added references for each parameter and will free them at the end.
+            Py_DECREF(params[i]);
+            params[i] = str.Detach();
+        }
+
         int cbT = GetParamBufferSize(params[i], i + 1) + sizeof(SQLLEN); // +1 to map to ODBC one-based index
 
         if (cbT < 0)
@@ -182,7 +184,7 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
     // If any parameters are None/NULL, we need to know the target type.  Unfortunately, some versions of SQL Server or
     // its drivers will not allow SQLDescribeCol once we start binding, so we must do this separately.
 
-    for (Py_ssize_t i = 0; i < cParams; i++)
+    for (SQLSMALLINT i = 0; i < cParams; i++)
     {
         if (params[i] == Py_None)
         {
@@ -197,7 +199,7 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
 
     byte* pbParam = cur->paramdata;
 
-    for (Py_ssize_t i = 0; i < cParams; i++)
+    for (int i = 0; i < cParams; i++)
     {
         if (!BindParam(cur, i + 1, params[i], &pbParam))
         {
@@ -273,40 +275,54 @@ static int GetParamBufferSize(PyObject* param, Py_ssize_t iParam)
     if (param == Py_None)
         return 0;
 
-    if (PyString_Check(param) || PyUnicode_Check(param))
+    if (PyBytes_Check(param))
         return 0;
+
+    if (PyUnicode_Check(param))
+    {
+        if (sizeof(SQLWCHAR) == sizeof(Py_UNICODE))
+            return 0; // we'll bind into the PyUnicode buffer directly
+        return (int)(PyUnicode_GET_SIZE(param) + 1) * sizeof(SQLWCHAR);
+    }
 
     if (param == Py_True || param == Py_False)
         return 1;
 
-    if (PyInt_Check(param))
-        return sizeof(long int);
-
     if (PyLong_Check(param))
-        return sizeof(INT64);
+    {
+        // Long objects can be any size.  For now we are going to require 64-bits or smaller.
+    
+        size_t bits = _PyLong_NumBits(param);
+        if (bits == (size_t)-1 || bits > 64) // (cast unnecessary? size_t always unsigned?)
+        {
+            RaiseErrorV("HY105", ProgrammingError, "Only integers up to 64-bits are supported. param-index=%d", (int)iParam);
+            return -1;
+        }
 
+        return sizeof(INT64);
+    }
+    
     if (PyFloat_Check(param))
         return sizeof(double);
 
     if (PyDecimal_Check(param))
     {
-        // There isn't an efficient way of getting the precision, but it's there and it's obvious.
+        // We are going to convert to a string representation.  I don't know of a more efficient way of doing this, so
+        // we're going to manually construct it.  At this point, we just need the length.  Note that we're not too
+        // concerned about accuracy as long as we're larger than the actual.
 
         Object digits = PyObject_GetAttrString(param, "_int");
-        if (digits)
-            return PySequence_Length(digits) + 3;  // sign, decimal, null
+        Object exp    = PyObject_GetAttrString(param, "_exp");
+
+        if (digits && exp)
+        {
+            return (int)max(PySequence_Length(digits), abs(PyLong_AsLong(exp))) + 3; // +3 = '-' + '0.' (maybe) + NULL
+        }
         
         // _int doesn't exist any more?
         return 42;
     }
     
-    if (PyBuffer_Check(param))
-    {
-        // If the buffer has a single segment, we can bind directly to it, so we need 0 bytes.  Otherwise, we'll use
-        // SQL_DATA_AT_EXEC, so we still need 0 bytes.
-        return 0;
-    }
-
     if (PyDateTime_Check(param))
         return sizeof(TIMESTAMP_STRUCT);
 
@@ -329,6 +345,8 @@ static const char* SqlTypeName(SQLSMALLINT n)
     {
         _MAKESTR(SQL_UNKNOWN_TYPE);
         _MAKESTR(SQL_CHAR);
+        _MAKESTR(SQL_VARCHAR);
+        _MAKESTR(SQL_LONGVARCHAR);
         _MAKESTR(SQL_NUMERIC);
         _MAKESTR(SQL_DECIMAL);
         _MAKESTR(SQL_INTEGER);
@@ -337,12 +355,17 @@ static const char* SqlTypeName(SQLSMALLINT n)
         _MAKESTR(SQL_REAL);
         _MAKESTR(SQL_DOUBLE);
         _MAKESTR(SQL_DATETIME);
-        _MAKESTR(SQL_VARCHAR);
+        _MAKESTR(SQL_WCHAR);
+        _MAKESTR(SQL_WVARCHAR);
+        _MAKESTR(SQL_WLONGVARCHAR);
         _MAKESTR(SQL_TYPE_DATE);
         _MAKESTR(SQL_TYPE_TIME);
         _MAKESTR(SQL_TYPE_TIMESTAMP);
         _MAKESTR(SQL_SS_TIME2);
         _MAKESTR(SQL_SS_XML);
+        _MAKESTR(SQL_BINARY);
+        _MAKESTR(SQL_VARBINARY);
+        _MAKESTR(SQL_LONGVARBINARY);
     }
     return "unknown";
 }
@@ -352,6 +375,7 @@ static const char* CTypeName(SQLSMALLINT n)
     switch (n)
     {
         _MAKESTR(SQL_C_CHAR);
+        _MAKESTR(SQL_C_WCHAR);
         _MAKESTR(SQL_C_LONG);
         _MAKESTR(SQL_C_SHORT);
         _MAKESTR(SQL_C_FLOAT);
@@ -458,43 +482,31 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
         *pcbValue = SQL_NULL_DATA;
         cbColDef  = 1;
     }
-    else if (PyString_Check(param))
-    {
-        char* pch = PyString_AS_STRING(param); 
-        int   len = PyString_GET_SIZE(param);
-
-        if (len <= MAX_VARCHAR_BUFFER)
-        {
-            fSqlType  = SQL_VARCHAR;
-            fCType    = SQL_C_CHAR;
-            pbValue  = pch;
-            cbColDef  = max(len, 1);
-            cbValueMax  = len + 1;
-            *pcbValue = (SQLLEN)len;
-        }
-        else
-        {
-            fSqlType   = SQL_LONGVARCHAR;
-            fCType     = SQL_C_CHAR;
-            pbValue    = param;
-            cbColDef   = max(len, 1);
-            cbValueMax = sizeof(PyObject*);
-            *pcbValue  = SQL_LEN_DATA_AT_EXEC((SQLLEN)len);
-        }
-    }
     else if (PyUnicode_Check(param))
     {
-        Py_UNICODE* pch = PyUnicode_AsUnicode(param); 
-        int      len = PyUnicode_GET_SIZE(param);
+        int len = (int)PyUnicode_GET_SIZE(param);
 
         if (len <= MAX_VARCHAR_BUFFER)
         {
+            Py_UNICODE* pch = PyUnicode_AsUnicode(param); 
+
             fSqlType   = SQL_WVARCHAR;
             fCType     = SQL_C_WCHAR;
-            pbValue    = pch;
-            cbColDef   = max(len, 1);
-            cbValueMax = (len + 1) * Py_UNICODE_SIZE;
-            *pcbValue  = (SQLLEN)(len * Py_UNICODE_SIZE);
+            cbColDef   = max(len, 1) * sizeof(SQLWCHAR);
+            cbValueMax = (len + 1) * sizeof(SQLWCHAR);
+            *pcbValue  = (SQLLEN)(len * sizeof(SQLWCHAR));
+            
+            if (sizeof(SQLWCHAR) == sizeof(Py_UNICODE))
+            {
+                // They are the same, so we'll bind directly into the Python object to save memory.
+                pbValue = pch;
+            }
+            else
+            {
+                // The sizes are not the same, so we should have memory already reserved.
+                SQLWCHAR* value = (SQLWCHAR*)pbParam;
+                sqlwchar_copy(value, pch, len);
+            }
         }
         else
         {
@@ -503,7 +515,7 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
             pbValue    = param;
             cbColDef   = max(len, 1) * sizeof(SQLWCHAR);
             cbValueMax = sizeof(PyObject*);
-            *pcbValue  = SQL_LEN_DATA_AT_EXEC((SQLLEN)(len * Py_UNICODE_SIZE));
+            *pcbValue  = SQL_LEN_DATA_AT_EXEC((SQLLEN)(len * sizeof(SQLWCHAR)));
         }
     }
     else if (param == Py_True || param == Py_False)
@@ -581,18 +593,6 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
         cbValueMax = sizeof(TIME_STRUCT);
         pcbValue = 0;
     }
-    else if (PyInt_Check(param))
-    {
-        long* value = (long*)pbParam;
-
-        *value = PyInt_AsLong(param);
-
-        fSqlType = SQL_INTEGER;
-        fCType   = SQL_C_LONG;
-        pbValue = pbParam;
-        cbValueMax = sizeof(long);
-        pcbValue = 0;
-    }
     else if (PyLong_Check(param))
     {
         INT64* value = (INT64*)pbParam;
@@ -617,73 +617,49 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
         cbValueMax = sizeof(double);
         pcbValue = 0;
     }
-    else if (PyDecimal_Check(param))
+    else if (PyBytes_Check(param))
     {
-        // Using the ODBC binary format would eliminate issues of whether to use '.' vs ',', but I've had unending
-        // problems attemting to bind the decimal using the binary struct.  In particular, the scale is never honored
-        // properly.  It appears that drivers have lots of bugs.  For now, we'll copy the value into a string, manually
-        // change '.' to the database's decimal value.  (At this point, it appears that the decimal class *always* uses
-        // '.', regardless of the user's locale.)
+        // A Python byte object could be ASCII/VARCHAR or binary/BINARY.  Unfortunately some DBs will not convert
+        // between the two, so we have to ask.  This is relatively expensive, but I don't see a way around it right
+        // now.
 
-        // GetParamBufferSize reserved room for the string length, which may include a sign and decimal.
-
-        Object str = PyObject_CallMethod(param, "__str__", 0);
-        if (!str)
-            return false;
-         
-        char* pch = PyString_AS_STRING(str.Get());
-        int   len = PyString_GET_SIZE(str.Get());
-
-        *pcbValue = (SQLLEN)len;
-         
-        // Note: SQL_DECIMAL here works for SQL Server but is not handled by MS Access.  SQL_NUMERIC seems to work for
-        // both, probably because I am providing exactly NUMERIC(p,s) anyway.
-        fSqlType = SQL_NUMERIC;
-        fCType   = SQL_C_CHAR;
-        pbValue = pbParam;
-        cbColDef = len;
-        memcpy(pbValue, pch, len + 1);
-        cbValueMax = len + 1;
-
-        char* pchDecimal = strchr((char*)pbValue, '.');
-        if (pchDecimal)
+        fSqlType = GetParamType(cur, iParam);
+        
+        switch(fSqlType)
         {
-            decimalDigits = (SQLSMALLINT)(len - (pchDecimal - (char*)pbValue) - 1);
+        case SQL_BINARY:
+        case SQL_VARBINARY:
+        case SQL_LONGVARBINARY:
+            fCType = SQL_C_BINARY;
+            break;
 
-            if (chDecimal != '.')
-                *pchDecimal = chDecimal; // (pointing into our own copy in pbValue)
+        case SQL_CHAR:
+        case SQL_VARCHAR:
+        case SQL_LONGVARCHAR:
+            fCType = SQL_C_CHAR;
+            break;
+
+        default:
+            fSqlType = SQL_VARCHAR;
+            fCType   = SQL_C_CHAR;
+            break;
         }
-    }
-    else if (PyBuffer_Check(param))
-    {
-        const char* pb;
-        int cb = PyBuffer_GetMemory(param, &pb);
 
-        if (cb != -1 && cb <= MAX_VARBINARY_BUFFER)
+        int len = (int)PyBytes_GET_SIZE(param);
+
+        if (len <= MAX_VARBINARY_BUFFER)
         {
-            // There is one segment, so we can bind directly into the buffer object.
-
-            fCType   = SQL_C_BINARY;
-            fSqlType = SQL_VARBINARY;
-    
-            pbValue  = (SQLPOINTER)pb;
-            cbValueMax  = cb;
-            cbColDef  = max(cb, 1);
-            *pcbValue = cb;
+            pbValue    = PyBytes_AS_STRING(param);
+            cbColDef   = max(len, 1);
+            cbValueMax = len;
+            *pcbValue  = (SQLLEN)len;
         }
         else
         {
-            // There are multiple segments, so we'll provide the data at execution time.  Pass the PyObject pointer as
-            // the parameter value which will be pased back to us when the data is needed.  (If we release threads, we
-            // need to up the refcount!)
-
-            fCType   = SQL_C_BINARY;
-            fSqlType = SQL_LONGVARBINARY;
-
-            pbValue  = param;
-            cbColDef  = PyBuffer_Size(param);
-            cbValueMax  = sizeof(PyObject*); // How big is pbValue; ODBC copies it and gives it back in SQLParamData
-            *pcbValue = SQL_LEN_DATA_AT_EXEC(PyBuffer_Size(param));
+            pbValue    = param;
+            cbColDef   = max(len, 1);
+            cbValueMax = sizeof(PyObject*);
+            *pcbValue  = SQL_LEN_DATA_AT_EXEC((SQLLEN)len);
         }
     }
     else

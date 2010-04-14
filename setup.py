@@ -25,7 +25,7 @@ class VersionCommand(Command):
 
     def run(self):
         version_str, version = get_version()
-        print version_str
+        print(version_str)
     
 
 def main():
@@ -45,8 +45,9 @@ def main():
         #     extra_compile_args = ['/W4']
         libraries.append('odbc32')
 
-        # extra_compile_args = ['/W4', '/Zi', '/Od']
-        # extra_link_args    = ['/DEBUG']
+        # extra_compile_args = ['/W4']
+        extra_compile_args = ['/W4', '/Zi', '/Od']
+        extra_link_args    = ['/DEBUG']
 
     elif os.environ.get("OS", '').lower().startswith('windows'):
         # Windows Cygwin (posix on windows)
@@ -155,7 +156,7 @@ def get_version():
         name, numbers = _get_version_git()
 
     if not numbers:
-        print 'WARNING: Unable to determine version.  Using 2.1.0.0'
+        print('WARNING: Unable to determine version.  Using 2.1.0.0')
         name, numbers = '2.1.0-unsupported', [2,1,0,0]
 
     return name, numbers
@@ -169,7 +170,7 @@ def _get_version_pkginfo():
             match = re_ver.search(line)
             if match:
                 name    = line.split(':', 1)[1].strip()
-                numbers = [int(n or 0) for n in match.groups()]
+                numbers = [int(n or OFFICIAL_BUILD) for n in match.groups()]
                 return name, numbers
 
     return None, None
@@ -178,7 +179,7 @@ def _get_version_pkginfo():
 def _get_version_git():
     n, result = getoutput('git describe --tags')
     if n:
-        print 'WARNING: git describe failed with: %s %s' % (n, result)
+        print('WARNING: git describe failed with: %s %s' % (n, result))
         return None, None
 
     match = re.match(r'(\d+).(\d+).(\d+) (?: -(\d+)-g[0-9a-z]+)?', result, re.VERBOSE)

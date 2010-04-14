@@ -2,6 +2,7 @@
 #include "pyodbc.h"
 #include "errors.h"
 #include "pyodbcmodule.h"
+#include "wrapper.h"
 
 // Exceptions
 
@@ -58,7 +59,7 @@ RaiseErrorV(const char* sqlstate, PyObject* exc_class, const char* format, ...)
 
     va_list marker;
     va_start(marker, format);
-    PyObject* pMsg = PyString_FromFormatV(format, marker);
+    PyObject* pMsg = PyUnicode_FromFormatV(format, marker);
     va_end(marker);
     if (!pMsg)
     {
@@ -98,12 +99,8 @@ bool HasSqlState(PyObject* ex, const char* szSqlState)
         if (args != 0)
         {
             PyObject* s = PySequence_GetItem(args, 1);
-            if (s != 0 && PyString_Check(s))
-            {
-                const char* sz = PyString_AsString(s);
-                if (sz && _strcmpi(sz, szSqlState) == 0)
-                    has = true;
-            }
+            if (s != 0 && PyUnicode_Check(s) && PyUnicode_CompareWithASCIIString(s, szSqlState))
+                has = true;
             Py_XDECREF(s);
             Py_DECREF(args);
         }
@@ -136,7 +133,7 @@ static PyObject* GetError(const char* sqlstate, PyObject* exc_class, PyObject* p
     
     PyTuple_SetItem(pAttrs, 1, pMsg); // pAttrs now owns the pMsg reference; steals a reference, does not increment
 
-    pSqlState = PyString_FromString(sqlstate);
+    pSqlState = PyUnicode_FromString(sqlstate);
     if (!pSqlState)
     {
         Py_DECREF(pAttrs);
@@ -185,6 +182,8 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
     //   The name of the function that failed.  Python generates a useful stack trace, but we often don't know where in
     //   the C++ code we failed.
 
+    List list(PyList_New(0));
+
     SQLSMALLINT nHandleType;
     SQLHANDLE   h;
 
@@ -195,8 +194,8 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
     char sqlstateT[6];
     char szMsg[1024];
 
-    PyObject* pMsg = 0;
-    PyObject* pMsgPart = 0;
+    // PyObject* pMsg = 0;
+    // PyObject* pMsgPart = 0;
 
     if (hstmt != SQL_NULL_HANDLE)
     {
@@ -214,11 +213,6 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
         h = henv;
     }
 
-    // unixODBC + PostgreSQL driver 07.01.0003 (Fedora 8 binaries from RPMs) crash if you call SQLGetDiagRec more
-    // than once.  I hate to do this, but I'm going to only call it once for non-Windows platforms for now...
-
-    SQLSMALLINT iRecord = 1;
-
     for (;;)
     {
         szMsg[0]     = 0;
@@ -226,64 +220,63 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
         nNativeError = 0;
         cchMsg       = 0;
 
+        SQLSMALLINT record = (SQLSMALLINT)(list.len() + 1);
+
         SQLRETURN ret;
         Py_BEGIN_ALLOW_THREADS
-        ret = SQLGetDiagRec(nHandleType, h, iRecord, (SQLCHAR*)sqlstateT, &nNativeError, (SQLCHAR*)szMsg, (short)(_countof(szMsg)-1), &cchMsg);
+        ret = SQLGetDiagRec(nHandleType, h, record, (SQLCHAR*)sqlstateT, &nNativeError, (SQLCHAR*)szMsg, (short)(_countof(szMsg)-1), &cchMsg);
         Py_END_ALLOW_THREADS
-        if (!SQL_SUCCEEDED(ret))
+
+        #ifdef TRACE_ALL
+        printf("ERROR: {%s}\n", szMsg);
+        #endif
+
+        if (!SQL_SUCCEEDED(ret) || cchMsg == 0)
             break;
 
-        // Not always NULL terminated (MS Access)
-        sqlstateT[5] = 0;
+        sqlstateT[5] = 0; // Not always NULL terminated (MS Access)
 
-        if (cchMsg != 0)
+        if (list.len() == 0)
         {
-            if (iRecord == 1)
-            {
-                // This is the first error message, so save the SQLSTATE for determining the exception class and append
-                // the calling function name.
+            // This is the first error message, so save the SQLSTATE for determining the exception class and append the
+            // calling function name.
 
-                memcpy(sqlstate, sqlstateT, sizeof(sqlstate[0]) * _countof(sqlstate));
-                
-                pMsg = PyString_FromFormat("[%s] %s (%ld) (%s)", sqlstateT, szMsg, nNativeError, szFunction);
-                if (pMsg == 0)
-                    return 0;
-            }
-            else
-            {
-                // This is not the first error message, so append to the existing one.
-                pMsgPart = PyString_FromFormat("; [%s] %s (%ld)", sqlstateT, szMsg, nNativeError);
-                if (pMsgPart == 0)
-                {
-                    Py_XDECREF(pMsg);
-                    return 0;
-                }
-                PyString_ConcatAndDel(&pMsg, pMsgPart);
-            }
+            memcpy(sqlstate, sqlstateT, sizeof(sqlstate[0]) * _countof(sqlstate));
         }
-
-        iRecord++;
+                
+        PyObject* pMsg = PyUnicode_FromFormat("[%s] %s (%ld) (%s)", sqlstateT, szMsg, nNativeError, szFunction);
+        if (pMsg == 0 || list.append(pMsg) == -1)
+            return 0;
 
 #ifndef _MSC_VER
-        // See non-Windows comment above
+        // unixODBC + PostgreSQL driver 07.01.0003 (Fedora 8 binaries from RPMs) crash if you call SQLGetDiagRec more
+        // than once.  I hate to do this, but I'm going to only call it once for non-Windows platforms for now...
         break;
 #endif
     }
 
-    if (pMsg == 0)
+    PyObject* msg;
+    if (list.len() == 0)
     {
-        // This only happens using unixODBC.  (Haven't tried iODBC yet.)  Either the driver or the driver manager is
-        // buggy and has signaled a fault without recording error information.
-        sqlstate[0] = '\0';
-        pMsg = PyString_FromString(DEFAULT_ERROR);
-        if (pMsg == 0)
-        {
-            PyErr_NoMemory();
-            return 0;
-        }
+        msg = PyUnicode_FromString(DEFAULT_ERROR);
     }
+    else if (list.len() == 1)
+    {
+        msg = list.GET(0);
+        list.SET(0, 0);
+    }
+    else
+    {
+        Object sep(PyUnicode_FromString(";"));
+        if (!sep)
+            return 0;
+        msg = PyUnicode_Join(sep, list);
+    }
+        
+    if (msg == 0)
+        return 0;
 
-    return GetError(sqlstate, 0, pMsg);
+    return GetError(sqlstate, 0, msg);
 }
 
 static bool GetSqlState(HSTMT hstmt, char* szSqlState)

@@ -23,6 +23,7 @@
 #include "errors.h"
 #include "getdata.h"
 #include "dbspecific.h"
+#include "sqlwchar.h"
 
 enum
 {
@@ -129,6 +130,8 @@ inline bool IsNumericType(SQLSMALLINT sqltype)
 PyObject*
 PythonTypeFromSqlType(const SQLCHAR* name, SQLSMALLINT type, bool unicode_results)
 {
+    UNUSED(unicode_results);
+
     // Returns a type object ('int', 'str', etc.) for the given ODBC C type.  This is used to populate
     // Cursor.description with the type of Python object that will be returned for each column.
     //
@@ -144,15 +147,9 @@ PythonTypeFromSqlType(const SQLCHAR* name, SQLSMALLINT type, bool unicode_result
 
     switch (type)
     {
-    case SQL_CHAR:
-    case SQL_VARCHAR:
-    case SQL_LONGVARCHAR:
-    case SQL_GUID:
     case SQL_SS_XML:
-        if (unicode_results)
-            pytype = (PyObject*)&PyUnicode_Type;
-        else
-            pytype = (PyObject*)&PyString_Type;
+    case SQL_GUID:
+        pytype = (PyObject*)&PyUnicode_Type;
         break;
 
     case SQL_DECIMAL:
@@ -166,12 +163,6 @@ PythonTypeFromSqlType(const SQLCHAR* name, SQLSMALLINT type, bool unicode_result
         pytype = (PyObject*)&PyFloat_Type;
         break;
 
-    case SQL_SMALLINT:
-    case SQL_INTEGER:
-    case SQL_TINYINT:
-        pytype = (PyObject*)&PyInt_Type;
-        break;
-        
     case SQL_TYPE_DATE:
         pytype = (PyObject*)PyDateTimeAPI->DateType;
         break;
@@ -185,6 +176,9 @@ PythonTypeFromSqlType(const SQLCHAR* name, SQLSMALLINT type, bool unicode_result
         pytype = (PyObject*)PyDateTimeAPI->DateTimeType;
         break;
         
+    case SQL_SMALLINT:
+    case SQL_INTEGER:
+    case SQL_TINYINT:
     case SQL_BIGINT:
         pytype = (PyObject*)&PyLong_Type;
         break;
@@ -193,10 +187,16 @@ PythonTypeFromSqlType(const SQLCHAR* name, SQLSMALLINT type, bool unicode_result
         pytype = (PyObject*)&PyBool_Type;
         break;
         
+    case SQL_CHAR:
+    case SQL_VARCHAR:
+    case SQL_LONGVARCHAR:
+        pytype = (PyObject*)&PyBytes_Type;
+        break;
+
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
-        pytype = (PyObject*)&PyBuffer_Type;
+        pytype = (PyObject*)&PyBytes_Type;
         break;
 
 
@@ -210,6 +210,7 @@ PythonTypeFromSqlType(const SQLCHAR* name, SQLSMALLINT type, bool unicode_result
         return RaiseErrorV(0, 0, "ODBC data type %d is not supported.  Cannot read column %s.", type, (const char*)name);
     }
     
+    // REVIEW: incref?
     Py_INCREF(pytype);
     return pytype;
 }
@@ -326,7 +327,7 @@ create_name_map(Cursor* cur, SQLSMALLINT field_count, bool lower)
 
         nullable_obj = 0;
 
-        index = PyInt_FromLong(i);
+        index = PyLong_FromLong(i);
         if (!index)
             goto done;
 
@@ -663,18 +664,11 @@ execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
         cur->pPreparedSQL = 0;
 
         szLastFunction = "SQLExecDirect";
-        if (PyString_Check(pSql))
-        {
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLExecDirect(cur->hstmt, (SQLCHAR*)PyString_AS_STRING(pSql), SQL_NTS);
-            Py_END_ALLOW_THREADS
-        }
-        else
-        {
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLExecDirectW(cur->hstmt, (SQLWCHAR*)PyUnicode_AsUnicode(pSql), SQL_NTS);
-            Py_END_ALLOW_THREADS
-        }
+
+        SQLWChar sql(pSql);
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLExecDirectW(cur->hstmt, (SQLWCHAR*)PyUnicode_AsUnicode(pSql), SQL_NTS);
+        Py_END_ALLOW_THREADS
     }
     
     if (cur->cnxn->hdbc == SQL_NULL_HANDLE)
@@ -707,22 +701,7 @@ execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
         if (ret == SQL_NEED_DATA)
         {
             szLastFunction = "SQLPutData";
-            if (PyBuffer_Check(pParam))
-            {
-                // Buffers can have multiple segments, so we might need multiple writes.  Looping through buffers isn't
-                // difficult, but we've wrapped it up in an iterator object to keep this loop simple.
-
-                BufferSegmentIterator it(pParam);
-                byte* pb;
-                SQLLEN cb;
-                while (it.Next(pb, cb))
-                {
-                    Py_BEGIN_ALLOW_THREADS
-                    SQLPutData(cur->hstmt, pb, cb);
-                    Py_END_ALLOW_THREADS
-                }
-            }
-            else if (PyUnicode_Check(pParam))
+            if (PyUnicode_Check(pParam))
             {
                 // REVIEW: This will fail if PyUnicode != wchar_t?
                 Py_UNICODE* p = PyUnicode_AS_UNICODE(pParam);
@@ -737,11 +716,11 @@ execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
                     offset += remaining;
                 }
             }
-            else if (PyString_Check(pParam))
+            else if (PyBytes_Check(pParam))
             {
-                const char* p = PyString_AS_STRING(pParam);
+                const char* p = PyBytes_AS_STRING(pParam);
                 SQLLEN offset = 0;
-                SQLLEN cb = (SQLLEN)PyString_GET_SIZE(pParam);
+                SQLLEN cb = (SQLLEN)PyBytes_GET_SIZE(pParam);
                 while (offset < cb)
                 {
                     SQLLEN remaining = min(MAX_VARCHAR_BUFFER, cb - offset);
@@ -821,7 +800,7 @@ execute(Cursor* cur, PyObject* pSql, PyObject* params, bool skip_first)
 inline bool
 IsSequence(PyObject* p)
 {
-    return PySequence_Check(p) && !PyString_Check(p) && !PyBuffer_Check(p) && !PyUnicode_Check(p);
+    return PySequence_Check(p) && !PyBytes_Check(p) && !PyUnicode_Check(p);
 }
 
 static char execute_doc[] =
@@ -855,9 +834,9 @@ Cursor_execute(PyObject* self, PyObject* args)
 
     PyObject* pSql = PyTuple_GET_ITEM(args, 0);
 
-    if (!PyString_Check(pSql) && !PyUnicode_Check(pSql))
+    if (!PyUnicode_Check(pSql))
     {
-        PyErr_SetString(PyExc_TypeError, "The first argument to execute must be a string or unicode query.");
+        PyErr_SetString(PyExc_TypeError, "The first argument to execute must be a unicode query.");
         return 0;
     }
 
@@ -897,9 +876,9 @@ Cursor_executemany(PyObject* self, PyObject* args)
     if (!PyArg_ParseTuple(args, "OO", &pSql, &param_seq))
         return 0;
 
-    if (!PyString_Check(pSql) && !PyUnicode_Check(pSql))
+    if (!PyUnicode_Check(pSql))
     {
-        PyErr_SetString(PyExc_TypeError, "The first argument to execute must be a string or unicode query.");
+        PyErr_SetString(PyExc_TypeError, "The first argument to execute must be a unicode query.");
         return 0;
     }
 
@@ -946,9 +925,6 @@ Cursor_fetch(Cursor* cur)
     // exception is set and zero is returned.  (To differentiate between the last two, use PyErr_Occurred.)
 
     SQLRETURN ret = 0;
-    int field_count, i;
-    PyObject** apValues;
-
     Py_BEGIN_ALLOW_THREADS
     ret = SQLFetch(cur->hstmt);
     Py_END_ALLOW_THREADS
@@ -965,14 +941,14 @@ Cursor_fetch(Cursor* cur)
     if (!SQL_SUCCEEDED(ret))
         return RaiseErrorFromHandle("SQLFetch", cur->cnxn->hdbc, cur->hstmt);
 
-    field_count = PyTuple_GET_SIZE(cur->description);
+    Py_ssize_t field_count = PyTuple_GET_SIZE(cur->description);
 
-    apValues = (PyObject**)malloc(sizeof(PyObject*) * field_count);
+    PyObject** apValues = (PyObject**)malloc(sizeof(PyObject*) * field_count);
 
     if (apValues == 0)
         return PyErr_NoMemory();
 
-    for (i = 0; i < field_count; i++)
+    for (int i = 0; i < (int)field_count; i++)
     {
         PyObject* value = GetData(cur, i);
 
@@ -2027,7 +2003,6 @@ static char cursor_doc[] =
 PyTypeObject CursorType =
 {
     PyObject_HEAD_INIT(0)
-    0,                                                      // ob_size
     "pyodbc.Cursor",                                        // tp_name
     sizeof(Cursor),                                         // tp_basicsize
     0,                                                      // tp_itemsize
@@ -2046,7 +2021,7 @@ PyTypeObject CursorType =
     0,                                                      // tp_getattro
     0,                                                      // tp_setattro
     0,                                                      // tp_as_buffer
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER,              // tp_flags
+    Py_TPFLAGS_DEFAULT,                                     // tp_flags
     cursor_doc,                                             // tp_doc
     0,                                                      // tp_traverse
     0,                                                      // tp_clear

@@ -4,6 +4,6 @@
 
 void GetData_init();
 
-PyObject* GetData(Cursor* cur, Py_ssize_t iCol);
+PyObject* GetData(Cursor* cur, int iCol);
 
 #endif // _GETDATA_H_

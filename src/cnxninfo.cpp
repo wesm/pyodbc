@@ -14,49 +14,35 @@
 //
 static PyObject* map_hash_to_info;
 
-static PyObject* hashlib;       // The hashlib module if Python 2.5+
-static PyObject* sha;           // The sha module if Python 2.4
+static PyObject* hashlib;       // The hashlib module
 static PyObject* update;        // The string 'update', used in GetHash.
 
 void CnxnInfo_init()
 {
-    // Called during startup to give us a chance to import the hash code.  If we can't find it, we'll print a warning
-    // to the console and not cache anything.
-
-    // First try hashlib which was added in 2.5.  2.6 complains using warnings which we don't want affecting the
-    // caller.
+    // Called during startup to give us a chance to import the hash code.
 
     map_hash_to_info = PyDict_New();
-
-    update = PyString_FromString("update");
-
+    update = PyUnicode_FromString("update");
     hashlib = PyImport_ImportModule("hashlib");
-    if (!hashlib)
-    {
-        sha = PyImport_ImportModule("sha");
-    }
 }
 
 static PyObject* GetHash(PyObject* p)
 {
     if (hashlib)
     {
-        Object hash(PyObject_CallMethod(hashlib, "new", "s", "sha1"));
-        if (!hash.IsValid())
-            return 0;
-        
-        PyObject_CallMethodObjArgs(hash, update, p, 0);
-        return PyObject_CallMethod(hash, "hexdigest", 0);
-    }
-    
-    if (sha)
-    {
-        Object hash(PyObject_CallMethod(sha, "new", 0));
-        if (!hash.IsValid())
-            return 0;
-        
-        PyObject_CallMethodObjArgs(hash, update, p, 0);
-        return PyObject_CallMethod(hash, "hexdigest", 0);
+        // REVIEW: Have to encode Unicode objects to bytes first.  This is starting to sound expensive.
+        // Is there a better way to handle this?
+
+        // Object hash(PyObject_CallMethod(hashlib, "new", "s", "sha1"));
+        // if (!hash.IsValid())
+        //     return 0;
+        //  
+        // PyObject_CallMethodObjArgs(hash, update, p, 0);
+        //  
+        // return PyObject_CallMethod(hash, "hexdigest", 0);
+
+        Py_INCREF(p);
+        return p;
     }
 
     return 0;
@@ -158,24 +144,24 @@ PyObject* GetConnectionInfo(PyObject* pConnectionString, Connection* cnxn)
 PyTypeObject CnxnInfoType =
 {
     PyObject_HEAD_INIT(0)
-    0,                                                      // ob_size
-    "pyodbc.CnxnInfo",                                      // tp_name
-    sizeof(CnxnInfo),                                       // tp_basicsize
-    0,                                                      // tp_itemsize
-    0,                                                      // destructor tp_dealloc
-    0,                                                      // tp_print
-    0,                                                      // tp_getattr
-    0,                                                      // tp_setattr
-    0,                                                      // tp_compare
-    0,                                                      // tp_repr
-    0,                                                      // tp_as_number
-    0,                                                      // tp_as_sequence
-    0,                                                      // tp_as_mapping
-    0,                                                      // tp_hash
-    0,                                                      // tp_call
-    0,                                                      // tp_str
-    0,                                                      // tp_getattro
-    0,                                                      // tp_setattro
-    0,                                                      // tp_as_buffer
-    Py_TPFLAGS_DEFAULT,                                     // tp_flags
+    "pyodbc.CnxnInfo",          // tp_name
+    sizeof(CnxnInfo),           // tp_basicsize
+    0,                          // tp_itemsize
+    0,                          // tp_dealloc
+    0,                          // tp_print
+    0,                          // tp_getattr
+    0,                          // tp_setattr
+    0,                          // tp_reserved
+    0,                          // tp_repr
+    0,                          // tp_as_number
+    0,                          // tp_as_sequence
+    0,                          // tp_as_mapping
+    0,                          // tp_hash 
+    0,                          // tp_call
+    0,                          // tp_str
+    0,                          // tp_getattro
+    0,                          // tp_setattro
+    0,                          // tp_as_buffer
+    Py_TPFLAGS_DEFAULT,         // tp_flags
+    0,                          // tp_doc
 };

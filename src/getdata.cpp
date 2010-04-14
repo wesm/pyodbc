@@ -8,6 +8,7 @@
 #include "connection.h"
 #include "errors.h"
 #include "dbspecific.h"
+#include "sqlwchar.h"
 
 void GetData_init()
 {
@@ -24,24 +25,15 @@ class DataBuffer
     //
     //   1) Binary, which is a simple array of 8-bit bytes.
     //   2) ANSI text, which is an array of chars with a NULL terminator.
-    //   3) Unicode text, which is an array of wchar_ts with a NULL terminator.
-    //
-    // When dealing with Unicode, there are two widths we have to be aware of: (1) wchar_t and (2) Py_UNICODE.  If
-    // these are the same we can use a PyUnicode object so we don't have to allocate our own buffer and then the
-    // Unicode object.  If they are not the same (e.g. OS/X where wchar_t-->4 Py_UNICODE-->2) then we need to maintain
-    // our own buffer and pass it to the PyUnicode object later.
-    //
-    // To reduce heap fragmentation, we perform the initial read into an array on the stack since we don't know the
-    // length of the data.  If the data doesn't fit, this class then allocates new memory.
+    //   3) Unicode text, which is an array of SQLWCHARs with a NULL terminator.
 
 private:
     SQLSMALLINT dataType;
 
     char* buffer;
     Py_ssize_t bufferSize;      // How big is the buffer.
-    int bytesUsed;          // How many elements have been read into the buffer?
+    int bytesUsed;              // How many elements have been read into the buffer?
 
-    PyObject* bufferOwner;      // If possible, we bind into a PyString or PyUnicode object.
     int element_size;           // How wide is each character: ASCII/ANSI -> 1, Unicode -> 2 or 4, binary -> 1
 
     bool usingStack;            // Is buffer pointing to the initial stack buffer?
@@ -62,7 +54,6 @@ public:
         buffer        = stackBuffer;
         bufferSize    = stackBufferSize;
         usingStack    = true;
-        bufferOwner   = 0;
         bytesUsed     = 0;
     }
 
@@ -70,14 +61,7 @@ public:
     {
         if (!usingStack)
         {
-            if (bufferOwner)
-            {
-                Py_DECREF(bufferOwner);
-            }
-            else
-            {
-                free(buffer);
-            }
+            free(buffer);
         }
     }
 
@@ -98,7 +82,7 @@ public:
     void AddUsed(SQLLEN cbRead)
     {
         I(cbRead <= GetRemaining());
-        bytesUsed += cbRead;
+        bytesUsed += (int)cbRead;
     }
 
     bool AllocateMore(SQLLEN cbAdd)
@@ -115,55 +99,23 @@ public:
             
             char* stackBuffer = buffer;
 
-            if (dataType == SQL_C_CHAR || dataType == SQL_C_BINARY)
-            {
-                bufferOwner = PyString_FromStringAndSize(0, newSize);
-                buffer      = bufferOwner ? PyString_AS_STRING(bufferOwner) : 0;
-            }
-            else if (sizeof(wchar_t) == Py_UNICODE_SIZE)
-            {
-                // Allocate directly into a Unicode object.
-                bufferOwner = PyUnicode_FromUnicode(0, newSize / element_size);
-                buffer      = bufferOwner ? (char*)PyUnicode_AsUnicode(bufferOwner) : 0;
-            }
-            else
-            {
-                // We're Unicode, but wchar_t and Py_UNICODE don't match, so maintain our own wchar_t buffer.
-                buffer = (char*)malloc(newSize);
-            }
-
-            usingStack = false;
-
+            buffer = (char*)malloc(newSize);
             if (buffer == 0)
                 return false;
+
+            usingStack = false;
 
             memcpy(buffer, stackBuffer, bufferSize);
             bufferSize = newSize;
             return true;
         }
 
-        if (PyString_CheckExact(bufferOwner))
-        {
-            if (_PyString_Resize(&bufferOwner, newSize) == -1)
-                return false;
-            buffer = PyString_AS_STRING(bufferOwner);
-        }
-        else if (PyUnicode_CheckExact(bufferOwner))
-        {
-            if (PyUnicode_Resize(&bufferOwner, newSize / element_size) == -1)
-                return false;
-            buffer = (char*)PyUnicode_AsUnicode(bufferOwner);
-        }
-        else
-        {
-            char* tmp = (char*)realloc(buffer, newSize);
-            if (tmp == 0)
-                return false;
-            buffer = tmp;
-        }
+        char* tmp = (char*)realloc(buffer, newSize);
+        if (tmp == 0)
+            return false;
 
+        buffer     = tmp;
         bufferSize = newSize;
-
         return true;
     }
 
@@ -174,44 +126,10 @@ public:
         if (bytesUsed == SQL_NULL_DATA || buffer == 0)
             Py_RETURN_NONE;
 
-        if (usingStack)
-        {
-            if (dataType == SQL_C_CHAR || dataType == SQL_C_BINARY)
-                return PyString_FromStringAndSize(buffer, bytesUsed);
+        if (dataType == SQL_C_CHAR || dataType == SQL_C_BINARY)
+            return PyBytes_FromStringAndSize(buffer, bytesUsed);
 
-            if (sizeof(wchar_t) == Py_UNICODE_SIZE)
-                return PyUnicode_FromUnicode((const Py_UNICODE*)buffer, bytesUsed / element_size);
-
-            return PyUnicode_FromWideChar((const wchar_t*)buffer, bytesUsed / element_size);
-        }
-
-        if (PyString_CheckExact(bufferOwner))
-        {
-            if (_PyString_Resize(&bufferOwner, bytesUsed) == -1)
-                return 0;
-            PyObject* tmp = bufferOwner;
-            bufferOwner = 0;
-            buffer      = 0;
-            return tmp;
-        }
-
-        if (PyUnicode_CheckExact(bufferOwner))
-        {
-            if (PyUnicode_Resize(&bufferOwner, bytesUsed / element_size) == -1)
-                return 0;
-            PyObject* tmp = bufferOwner;
-            bufferOwner = 0;
-            buffer      = 0;
-            return tmp;
-        }
-
-        // We have allocated our own wchar_t buffer and must now copy it to a Unicode object.
-        PyObject* result = PyUnicode_FromWideChar((const wchar_t*)buffer, bytesUsed / element_size);
-        if (result == 0)
-            return false;
-        free(buffer);
-        buffer = 0;
-        return result;
+        return PyUnicode_FromSQLWCHAR((SQLWCHAR*)buffer, (bytesUsed / sizeof(SQLWCHAR)));
     }
 };
 
@@ -251,14 +169,11 @@ GetDataString(Cursor* cur, int iCol)
     case SQL_CHAR:
     case SQL_VARCHAR:
     case SQL_LONGVARCHAR:
-    case SQL_GUID:
-    case SQL_SS_XML:
-        if (cur->cnxn->unicode_results)
-            nTargetType  = SQL_C_WCHAR;
-        else
-            nTargetType  = SQL_C_CHAR;
+        nTargetType  = SQL_C_CHAR;
         break;
 
+    case SQL_GUID:
+    case SQL_SS_XML:
     case SQL_WCHAR:
     case SQL_WVARCHAR:
     case SQL_WLONGVARCHAR:
@@ -342,26 +257,7 @@ GetDataString(Cursor* cur, int iCol)
 }
 
 static PyObject*
-GetDataBuffer(Cursor* cur, Py_ssize_t iCol)
-{
-    PyObject* str = GetDataString(cur, iCol);
-
-    if (str == Py_None)
-        return str;
-
-    PyObject* buffer = 0;
-
-    if (str)
-    {
-        buffer = PyBuffer_FromObject(str, 0, PyString_GET_SIZE(str));
-        Py_DECREF(str);         // If no buffer, release it.  If buffer, the buffer owns it.
-    }
-
-    return buffer;
-}
-
-static PyObject*
-GetDataDecimal(Cursor* cur, int iCol)
+GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
 {
     // The SQL_NUMERIC_STRUCT support is hopeless (SQL Server ignores scale on input parameters and output columns), so
     // we'll rely on the Decimal's string parsing.  Unfortunately, the Decimal author does not pay attention to the
@@ -397,7 +293,7 @@ GetDataDecimal(Cursor* cur, int iCol)
     //
     // Note: cbFetched does not include the NULL terminator.
 
-    for (int i = cbFetched - 1; i >=0; i--)
+    for (int i = (int)(cbFetched - 1); i >=0; i--)
     {
         if (sz[i] == chGroupSeparator || sz[i] == '$' || sz[i] == chCurrencySymbol)
         {
@@ -457,9 +353,9 @@ GetDataLong(Cursor* cur, int iCol)
         Py_RETURN_NONE;
 
     if (pinfo->is_unsigned)
-        return PyInt_FromLong(*(SQLINTEGER*)&value);
+        return PyLong_FromLong(*(SQLUINTEGER*)&value);
 
-    return PyInt_FromLong(value);
+    return PyLong_FromLong(value);
 }
 
 static PyObject*
@@ -564,7 +460,7 @@ GetDataTimestamp(Cursor* cur, int iCol)
 
 
 PyObject*
-GetData(Cursor* cur, Py_ssize_t iCol)
+GetData(Cursor* cur, int iCol)
 {
     // Returns an object representing the value in the row/field.  If 0 is returned, an exception has already been set.
     //
@@ -582,12 +478,10 @@ GetData(Cursor* cur, Py_ssize_t iCol)
     case SQL_LONGVARCHAR:
     case SQL_GUID:
     case SQL_SS_XML:
-        return GetDataString(cur, iCol);
-
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
-        return GetDataBuffer(cur, iCol);
+        return GetDataString(cur, iCol);
 
     case SQL_DECIMAL:
     case SQL_NUMERIC:
