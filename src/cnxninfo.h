@@ -29,6 +29,10 @@ struct CnxnInfo
 
     int varchar_maxlength;
     int binary_maxlength;
+
+    // An LRUCache mapping mapping SQL statements to ParamType objects.  This is shared by all connections using this
+    // cnxninfo.
+    PyObject* param_types;
 };
 
 void CnxnInfo_init();

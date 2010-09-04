@@ -8,6 +8,8 @@
 #include "wrapper.h"
 #include "errors.h"
 #include "dbspecific.h"
+#include "sqlwchar.h"
+#include "paramtypes.h"
 
 inline Connection* GetConnection(Cursor* cursor)
 {
@@ -22,6 +24,9 @@ void FreeParameterData(Cursor* cur)
 {
     // Unbinds the parameters and frees the parameter buffer.
 
+    Py_XDECREF(cur->pPreparedSQL);
+    cur->pPreparedSQL = 0;
+
     if (cur->paramdata)
     {
         // MS ODBC will crash if we use an HSTMT after the HDBC has been freed.
@@ -31,7 +36,7 @@ void FreeParameterData(Cursor* cur)
             SQLFreeStmt(cur->hstmt, SQL_RESET_PARAMS);
             Py_END_ALLOW_THREADS
         }
-        
+
         free(cur->paramdata);
         cur->paramdata = 0;
     }
@@ -43,10 +48,10 @@ void FreeParameterInfo(Cursor* cur)
     // since this information is also freed in the less granular free_results function that clears everything.
 
     Py_XDECREF(cur->pPreparedSQL);
-    free(cur->paramtypes);
     cur->pPreparedSQL = 0;
-    cur->paramtypes   = 0;
-    cur->paramcount   = 0;
+
+    Py_XDECREF(cur->param_types);
+    cur->param_types = 0;
 }
 
 
@@ -69,6 +74,8 @@ struct ObjectArrayHolder
 
 bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool skip_first)
 {
+    I(cur->paramdata == 0);
+
     //
     // Normalize the parameter variables.
     //
@@ -86,7 +93,7 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
         PyErr_NoMemory();
         return 0;
     }
-    
+
     for (Py_ssize_t i = 0; i < cParams; i++)
         params[i] = PySequence_GetItem(original_params, i + params_offset);
 
@@ -125,7 +132,7 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
             }
             Py_END_ALLOW_THREADS
         }
-  
+
         if (cur->cnxn->hdbc == SQL_NULL_HANDLE)
         {
             // The connection was closed by another thread in the ALLOW_THREADS block above.
@@ -138,17 +145,25 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
             RaiseErrorFromHandle(szErrorFunc, GetConnection(cur)->hdbc, cur->hstmt);
             return false;
         }
-                
-        cur->paramcount = (int)cParamsT;
 
         cur->pPreparedSQL = pSql;
         Py_INCREF(cur->pPreparedSQL);
+
+        if (cParamsT > 0)
+        {
+            cur->param_types = cur->cnxn->GetParamTypesForSQL(pSql, cParamsT);
+            printf("get: %p\n", cur->param_types);
+            if (!cur->param_types)
+                return false;
+        }
     }
-        
-    if (cParams != cur->paramcount)
+
+    int actual_count = (cur->param_types == 0) ? 0 : cur->param_types->count;
+
+    if (cParams != actual_count)
     {
         RaiseErrorV(0, ProgrammingError, "The SQL contains %d parameter markers, but %d parameters were supplied",
-                    cur->paramcount, cParams);
+                    actual_count, cParams);
         return false;
     }
 
@@ -220,44 +235,31 @@ static SQLSMALLINT GetParamType(Cursor* cur, int iParam)
     //
     // If the database doesn't support SQLDescribeParam, we return SQL_UNKNOWN_TYPE.
 
-    if (!GetConnection(cur)->supports_describeparam || cur->paramcount == 0)
+    if (!GetConnection(cur)->supports_describeparam || cur->param_types == 0)
         return SQL_UNKNOWN_TYPE;
 
-    if (cur->paramtypes == 0)
-    {
-        cur->paramtypes = reinterpret_cast<SQLSMALLINT*>(malloc(sizeof(SQLSMALLINT) * cur->paramcount));
-        if (cur->paramtypes == 0)
-        {
-            // Out of memory.  We *could* define a new return type to indicate this, but since returning
-            // SQL_UNKNOWN_TYPE is allowed, we'll do that instead.  Some other function higher up will eventually try
-            // to allocate memory and fail, so we'll rely on that.
-            
-            return SQL_UNKNOWN_TYPE;
-        }
-            
-        // SQL_UNKNOWN_TYPE is zero, so zero out all columns since we haven't looked any up yet.
-        memset(cur->paramtypes, 0, sizeof(SQLSMALLINT) * cur->paramcount);
-    }
-
-    if (cur->paramtypes[iParam-1] == SQL_UNKNOWN_TYPE)
+    if (cur->param_types->types[iParam-1] == SQL_UNKNOWN_TYPE)
     {
         SQLULEN ParameterSizePtr;
         SQLSMALLINT DecimalDigitsPtr;
         SQLSMALLINT NullablePtr;
         SQLRETURN ret;
 
+        SQLSMALLINT type;
         Py_BEGIN_ALLOW_THREADS
-        ret = SQLDescribeParam(cur->hstmt, static_cast<SQLUSMALLINT>(iParam), &cur->paramtypes[iParam-1],
+        ret = SQLDescribeParam(cur->hstmt, static_cast<SQLUSMALLINT>(iParam), &type,
                                &ParameterSizePtr, &DecimalDigitsPtr, &NullablePtr);
         Py_END_ALLOW_THREADS
 
         // If this fails, the value will still be SQL_UNKNOWN_TYPE, so we drop out below and return it.
 
-        if (!SQL_SUCCEEDED(ret))
+        if (SQL_SUCCEEDED(ret))
+            cur->param_types->types[iParam-1] = type;
+        else
             RaiseErrorFromHandle("SQLDescribeParam", GetConnection(cur)->hdbc, cur->hstmt);
     }
 
-    return cur->paramtypes[iParam-1];
+    return cur->param_types->types[iParam-1];
 }
 
 
@@ -295,11 +297,11 @@ static int GetParamBufferSize(PyObject* param, Py_ssize_t iParam)
         Object digits = PyObject_GetAttrString(param, "_int");
         if (digits)
             return PySequence_Length(digits) + 3;  // sign, decimal, null
-        
+
         // _int doesn't exist any more?
         return 42;
     }
-    
+
     if (PyBuffer_Check(param))
     {
         // If the buffer has a single segment, we can bind directly to it, so we need 0 bytes.  Otherwise, we'll use
@@ -453,14 +455,14 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
         fSqlType  = GetParamType(cur, iParam); // First see if the driver can tell us the target type...
         if (fSqlType == SQL_UNKNOWN_TYPE)      // ... if it can't
             fSqlType =  SQL_VARCHAR;           // ... assume varchar (which fails on SQL Server binary fields)
-        
+
         fCType    = SQL_C_DEFAULT;
         *pcbValue = SQL_NULL_DATA;
         cbColDef  = 1;
     }
     else if (PyString_Check(param))
     {
-        char* pch = PyString_AS_STRING(param); 
+        char* pch = PyString_AS_STRING(param);
         int   len = PyString_GET_SIZE(param);
 
         if (len <= cur->cnxn->varchar_maxlength)
@@ -484,7 +486,7 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
     }
     else if (PyUnicode_Check(param))
     {
-        Py_UNICODE* pch = PyUnicode_AsUnicode(param); 
+        Py_UNICODE* pch = PyUnicode_AsUnicode(param);
         int      len = PyUnicode_GET_SIZE(param);
 
         if (len <= cur->cnxn->varchar_maxlength)
@@ -539,7 +541,7 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
         else
         {
             value->fraction = (SQLUINTEGER)(PyDateTime_DATE_GET_MICROSECOND(param) * 1000); // 1000 == micro -> nano
-            
+
             // (How many leading digits do we want to keep?  With SQL Server 2005, this should be 3: 123000000)
             int keep = (int)pow(10.0, 9-min(9, precision));
             value->fraction = value->fraction / keep * keep;
@@ -630,12 +632,12 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
         Object str = PyObject_CallMethod(param, "__str__", 0);
         if (!str)
             return false;
-         
+
         char* pch = PyString_AS_STRING(str.Get());
         int   len = PyString_GET_SIZE(str.Get());
 
         *pcbValue = (SQLLEN)len;
-         
+
         // Note: SQL_DECIMAL here works for SQL Server but is not handled by MS Access.  SQL_NUMERIC seems to work for
         // both, probably because I am providing exactly NUMERIC(p,s) anyway.
         fSqlType = SQL_NUMERIC;
@@ -665,7 +667,7 @@ static bool BindParam(Cursor* cur, int iParam, PyObject* param, byte** ppbParam)
 
             fCType   = SQL_C_BINARY;
             fSqlType = SQL_VARBINARY;
-    
+
             pbValue  = (SQLPOINTER)pb;
             cbValueMax  = cb;
             cbColDef  = max(cb, 1);

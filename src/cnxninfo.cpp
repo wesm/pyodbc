@@ -9,6 +9,7 @@
 #include "cnxninfo.h"
 #include "connection.h"
 #include "wrapper.h"
+#include "lrucache.h"
 
 // Maps from a Python string of the SHA1 hash to a CnxnInfo object.
 //
@@ -75,6 +76,7 @@ static PyObject* CnxnInfo_New(Connection* cnxn)
     p->odbc_minor             = 50;
     p->supports_describeparam = false;
     p->datetime_precision     = 19; // default: "yyyy-mm-dd hh:mm:ss"
+    p->param_types = 0;
 
     // WARNING: The GIL lock is released for the *entire* function here.  Do not touch any objects, call Python APIs,
     // etc.  We are simply making ODBC calls and setting atomic values (ints & chars).  Also, make sure the lock gets
@@ -140,6 +142,10 @@ static PyObject* CnxnInfo_New(Connection* cnxn)
     Py_END_ALLOW_THREADS
 
     // WARNING: Released the lock now.
+    
+    p->param_types = LRUCache_New(2);
+    if (p->param_types == 0)
+        return 0;
     
     return info.Detach();
 }

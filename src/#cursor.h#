@@ -15,7 +15,6 @@
 #define CURSOR_H
 
 struct Connection;
-struct ParamTypes;
 
 struct ColumnInfo
 {
@@ -55,11 +54,9 @@ struct Cursor
     PyObject* pPreparedSQL;
 
     // If pPreparedSQL has parameters, this is a ParamTypes object.  Otherwise this is zero.
-    ParamTypes* param_types;
+    PyObject* param_types;
 
-    // // The number of parameter markers in pPreparedSQL.  This will be zero when pPreparedSQL is zero but is set
-    // // immediately after preparing the SQL.
-    // int paramcount;
+
 
     // // If non-zero, a pointer to an array of SQL type values allocated via malloc.  This is zero until we actually ask
     // // for the type of parameter, which is only when a parameter is None (NULL).  At that point, the entire array is

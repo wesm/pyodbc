@@ -110,6 +110,30 @@ class SqlServerTestCase(unittest.TestCase):
             self.cursor.execute("select n from t1 where n < ?", 10)
             self.cursor.execute("select n from t1 where n < 3")
         
+    def test_cache(self):
+        # There is an internal parameter type cache per connection string.  The following exercise it, but we really
+        # can't check it at this point.
+
+        self.cursor.execute("create table t1(n int)")
+        self.cursor.execute("insert into t1 values (1)")
+
+        # First reuse the same select a few times.
+
+        self.cursor.execute("select n from t1 where n=?", 1).fetchall()
+
+        for i in range(1):
+            rows = self.cursor.execute("select n from t1 where n=?", 1).fetchall()
+            self.assertEqual(len(rows), 1)
+            rows = self.cursor.execute("select n from t1 where n=? order by n", 1).fetchall()
+            self.assertEqual(len(rows), 1)
+
+        # Now generate a bunch of different selects, more than the cache can hold.
+        # Right now it is hardcoded in the C++ code.
+
+        for i in range(2):
+            for value in range(4):
+                self.cursor.execute("select n from t1 where n=%s and n !=?" % value, value)
+
 
     def test_different_bindings(self):
         self.cursor.execute("create table t1(n int)")
@@ -349,6 +373,23 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(type(v), Decimal)
         self.assertEqual(v, value)
 
+    def _maketest(p, s, n):
+        def t(self):
+            self._decimal(p, s, n)
+        return t
+    #for (p, s, n) in [ (1,  0,  False),
+    #                   (1,  0,  True),
+    #                   (6,  0,  False),
+    #                   (6,  2,  False),
+    #                   (6,  4,  True),
+    #                   (6,  6,  True),
+    #                   (38, 0,  False),
+    #                   (38, 10, False),
+    #                   (38, 38, False),
+    #                   (38, 0,  True),
+    #                   (38, 10, True),
+    #                   (38, 38, True) ]:
+    #    locals()['test_decimal_%s_%s_%s' % (p, s, n and 'n' or 'p')] = _maketest(p, s, n)
 
     def test_negative_decimal_scale(self):
         value = Decimal('-10.0010')
@@ -772,12 +813,12 @@ class SqlServerTestCase(unittest.TestCase):
         self.assertEqual(v, "testing")
 
 
-    def test_money(self):
-        d = Decimal('123456.78')
-        self.cursor.execute("create table t1(i int identity(1,1), m money)")
-        self.cursor.execute("insert into t1(m) values (?)", d)
-        v = self.cursor.execute("select m from t1").fetchone()[0]
-        self.assertEqual(v, d)
+    # def test_money(self):
+    #     d = Decimal('123456.78')
+    #     self.cursor.execute("create table t1(i int identity(1,1), m money)")
+    #     self.cursor.execute("insert into t1(m) values (?)", d)
+    #     v = self.cursor.execute("select m from t1").fetchone()[0]
+    #     self.assertEqual(v, d)
 
 
     def test_executemany(self):
@@ -1081,9 +1122,9 @@ def main():
     else:
         connection_string = args[0]
 
-    cnxn = pyodbc.connect(connection_string)
-    print_library_info(cnxn)
-    cnxn.close()
+    # cnxn = pyodbc.connect(connection_string)
+    # print_library_info(cnxn)
+    # cnxn.close()
 
     suite = load_tests(SqlServerTestCase, options.test, connection_string)
 

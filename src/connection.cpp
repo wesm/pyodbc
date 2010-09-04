@@ -16,6 +16,9 @@
 #include "errors.h"
 #include "wrapper.h"
 #include "cnxninfo.h"
+#include "sqlwchar.h"
+#include "lrucache.h"
+#include "paramtypes.h"
 
 static char connection_doc[] =
     "Connection objects manage connections to the database.\n"
@@ -44,7 +47,31 @@ Connection_Validate(PyObject* self)
     return cnxn;
 }
 
-static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi)
+// Returns a ParamTypes object for the given SQL.  The returned object will have already been referenced.  Returns
+// zero on error.
+ParamTypes* Connection::GetParamTypesForSQL(PyObject* sql, int count)
+{
+    LRUCache* cache = (LRUCache*)param_types;
+
+    PyObject* p = cache->get(sql);
+
+    if (p == 0 && !PyErr_Occurred())
+    {
+        p = ParamTypes_New(count);
+        if (p == 0)
+            return 0;
+        if (!cache->add(sql, p))
+        {
+            printf("Could not add\n");
+            Py_DECREF(p);
+            return 0;
+        }
+    }
+
+    return (ParamTypes*)p;
+}
+
+static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi, long timeout)
 {
     // This should have been checked by the global connect function.
     I(PyString_Check(pConnectString) || PyUnicode_Check(pConnectString));
@@ -184,11 +211,15 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi,
         return 0;
     }
 
-    cnxn->hdbc            = hdbc;
-    cnxn->nAutoCommit     = fAutoCommit ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    cnxn->searchescape    = 0;
-    cnxn->timeout         = 0;
-    cnxn->unicode_results = fUnicodeResults;
+    cnxn->hdbc             = hdbc;
+    cnxn->nAutoCommit      = fAutoCommit ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+    cnxn->searchescape     = 0;
+    cnxn->timeout          = 0;
+    cnxn->unicode_results  = fUnicodeResults;
+    cnxn->conv_count       = 0;
+    cnxn->conv_types       = 0;
+    cnxn->conv_funcs       = 0;
+    cnxn->param_types      = 0;
 
     //
     // Initialize autocommit mode.
@@ -236,7 +267,9 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi,
     cnxn->datetime_precision     = p->datetime_precision;
     cnxn->varchar_maxlength      = p->varchar_maxlength;
     cnxn->binary_maxlength       = p->binary_maxlength;
-
+    cnxn->param_types            = p->param_types;
+    Py_INCREF(cnxn->param_types);
+    
     return reinterpret_cast<PyObject*>(cnxn);
 }
 
@@ -268,6 +301,11 @@ Connection_clear(Connection* cnxn)
     Py_XDECREF(cnxn->searchescape);
     cnxn->searchescape = 0;
     
+    _clear_conv(cnxn);
+
+    Py_XDECREF(cnxn->param_types);
+    cnxn->param_types = 0;
+
     return 0;
 }
 

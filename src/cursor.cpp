@@ -443,16 +443,17 @@ closeimpl(Cursor* cur)
         SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
         Py_END_ALLOW_THREADS
     }
-
     
     Py_XDECREF(cur->pPreparedSQL);
     Py_XDECREF(cur->description);
     Py_XDECREF(cur->map_name_to_index);
+    Py_XDECREF((PyObject*)cur->param_types);
     Py_XDECREF(cur->cnxn);
 
     cur->pPreparedSQL = 0;
     cur->description = 0;
     cur->map_name_to_index = 0;
+    cur->param_types = 0;
     cur->cnxn = 0;
 }
 
@@ -486,7 +487,6 @@ Cursor_dealloc(Cursor* cursor)
 
     PyObject_Del(cursor);
 }
-
 
 
 bool
@@ -2087,8 +2087,7 @@ Cursor_New(Connection* cnxn)
         cur->hstmt             = SQL_NULL_HANDLE;
         cur->description       = Py_None;
         cur->pPreparedSQL      = 0;
-        cur->paramcount        = 0;
-        cur->paramtypes        = 0;
+        cur->param_types       = 0;
         cur->paramdata         = 0;
         cur->colinfos          = 0;
         cur->arraysize         = 1;

@@ -19,6 +19,7 @@
 #include "getdata.h"
 #include "cnxninfo.h"
 #include "dbspecific.h"
+#include "paramtypes.h"
 
 #include <time.h>
 #include <stdarg.h>
@@ -867,6 +868,9 @@ initpyodbc()
     ErrorInit();
 
     if (PyType_Ready(&ConnectionType) < 0 || PyType_Ready(&CursorType) < 0 || PyType_Ready(&RowType) < 0 || PyType_Ready(&CnxnInfoType) < 0)
+        return;
+
+    if (PyType_Ready(&ParamTypesType) < 0)
         return;
 
     pModule = Py_InitModule4("pyodbc", pyodbc_methods, module_doc, NULL, PYTHON_API_VERSION);
