@@ -244,15 +244,15 @@ GetDataString(Cursor* cur, Py_ssize_t iCol)
     //  1) Include NULL terminators in input buffer lengths.
     //  2) NULL terminators are not used in data lengths.
 
-    ColumnInfo* pinfo = &cur->colinfos[iCol];
+    ColumnInfo& info = cur->colinfos[iCol];
 
     // Some Unix ODBC drivers do not return the correct length.
-    if (pinfo->sql_type == SQL_GUID)
-        pinfo->column_size = 36;
+    if (info.DataType == SQL_GUID)
+        info.ColumnSize = 36;
 
     SQLSMALLINT nTargetType;
 
-    switch (pinfo->sql_type)
+    switch (info.DataType)
     {
     case SQL_CHAR:
     case SQL_VARCHAR:
@@ -392,10 +392,10 @@ GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
     //
     // Oracle inserts group separators (commas in US, periods in some countries), so leave room for that too.
 
-    ColumnInfo* pinfo = &cur->colinfos[iCol];
+    ColumnInfo& info = cur->colinfos[iCol];
 
-    SQLLEN cbNeeded = pinfo->column_size + 3 +      // sign, decimal, NULL
-                      (pinfo->column_size / 3) + 2; // grouping.  I believe this covers all cases.
+    SQLLEN cbNeeded = info.ColumnSize + 3 +      // sign, decimal, NULL
+                      (info.ColumnSize / 3) + 2; // grouping.  I believe this covers all cases.
 
     SQLLEN cbFetched = 0;
     char* sz = (char*)_alloca(cbNeeded);
@@ -462,13 +462,13 @@ GetDataBit(Cursor* cur, Py_ssize_t iCol)
 static PyObject*
 GetDataLong(Cursor* cur, Py_ssize_t iCol)
 {
-    ColumnInfo* pinfo = &cur->colinfos[iCol];
+    ColumnInfo& info = cur->colinfos[iCol];
 
     long value = 0;
     SQLLEN cbFetched = 0;
     SQLRETURN ret;
 
-    SQLSMALLINT nCType = pinfo->is_unsigned ? SQL_C_ULONG : SQL_C_LONG;
+    SQLSMALLINT nCType = info.is_unsigned ? SQL_C_ULONG : SQL_C_LONG;
 
     Py_BEGIN_ALLOW_THREADS
     ret = SQLGetData(cur->hstmt, (SQLSMALLINT)(iCol+1), nCType, &value, sizeof(value), &cbFetched);
@@ -479,7 +479,7 @@ GetDataLong(Cursor* cur, Py_ssize_t iCol)
     if (cbFetched == SQL_NULL_DATA)
         Py_RETURN_NONE;
 
-    if (pinfo->is_unsigned)
+    if (info.is_unsigned)
         return PyInt_FromLong(*(SQLINTEGER*)&value);
 
     return PyInt_FromLong(value);
@@ -487,9 +487,9 @@ GetDataLong(Cursor* cur, Py_ssize_t iCol)
 
 static PyObject* GetDataLongLong(Cursor* cur, Py_ssize_t iCol)
 {
-    ColumnInfo* pinfo = &cur->colinfos[iCol];
+    ColumnInfo& info = cur->colinfos[iCol];
 
-    SQLSMALLINT nCType = pinfo->is_unsigned ? SQL_C_UBIGINT : SQL_C_SBIGINT;
+    SQLSMALLINT nCType = info.is_unsigned ? SQL_C_UBIGINT : SQL_C_SBIGINT;
     SQLBIGINT   value;
     SQLLEN      cbFetched;
     SQLRETURN   ret;
@@ -504,7 +504,7 @@ static PyObject* GetDataLongLong(Cursor* cur, Py_ssize_t iCol)
     if (cbFetched == SQL_NULL_DATA)
         Py_RETURN_NONE;
 
-    if (pinfo->is_unsigned)
+    if (info.is_unsigned)
         return PyLong_FromUnsignedLongLong((PY_LONG_LONG)value);
 
     return PyLong_FromLongLong((PY_LONG_LONG)value);
@@ -567,7 +567,7 @@ GetDataTimestamp(Cursor* cur, Py_ssize_t iCol)
     if (cbFetched == SQL_NULL_DATA)
         Py_RETURN_NONE;
 
-    switch (cur->colinfos[iCol].sql_type)
+    switch (cur->colinfos[iCol].DataType)
     {
     case SQL_TYPE_TIME:
     {
@@ -583,13 +583,13 @@ GetDataTimestamp(Cursor* cur, Py_ssize_t iCol)
     return PyDateTime_FromDateAndTime(value.year, value.month, value.day, value.hour, value.minute, value.second, micros);
 }
 
-int GetUserConvIndex(Cursor* cur, SQLSMALLINT sql_type)
+int GetUserConvIndex(Cursor* cur, SQLSMALLINT DataType)
 {
     // If this sql type has a user-defined conversion, the index into the connection's `conv_funcs` array is returned.
     // Otherwise -1 is returned.
 
     for (int i = 0; i < cur->cnxn->conv_count; i++)
-        if (cur->cnxn->conv_types[i] == sql_type)
+        if (cur->cnxn->conv_types[i] == DataType)
             return i;
     return -1;
 }
@@ -602,15 +602,15 @@ GetData(Cursor* cur, Py_ssize_t iCol)
     //
     // The data is assumed to be the default C type for the column's SQL type.
 
-    ColumnInfo* pinfo = &cur->colinfos[iCol];
+    ColumnInfo& info = cur->colinfos[iCol];
 
     // First see if there is a user-defined conversion.
 
-    int conv_index = GetUserConvIndex(cur, pinfo->sql_type);
+    int conv_index = GetUserConvIndex(cur, info.DataType);
     if (conv_index != -1)
         return GetDataUser(cur, iCol, conv_index);
 
-    switch (pinfo->sql_type)
+    switch (info.DataType)
     {
     case SQL_WCHAR:
     case SQL_WVARCHAR:
@@ -663,5 +663,5 @@ GetData(Cursor* cur, Py_ssize_t iCol)
     }
 
     return RaiseErrorV("HY106", ProgrammingError, "ODBC SQL type %d is not yet supported.  column-index=%zd  type=%d",
-                       (int)pinfo->sql_type, iCol, (int)pinfo->sql_type);
+                       (int)info.DataType, iCol, (int)info.DataType);
 }

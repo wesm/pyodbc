@@ -14,21 +14,33 @@
 #ifndef ROW_H
 #define ROW_H
 
-struct Row;
+struct Row
+{
+    // A Row must act like a sequence (a tuple of results) to meet the DB API specification, but we also allow values
+    // to be accessed via lowercased column names.  We also supply a `columns` attribute which returns the list of
+    // column names.
+
+    PyObject_HEAD
+
+    // cursor.description, accessed as _description
+    PyObject* description;
+
+    // A Python dictionary mapping from column name to a PyInteger, used to access columns by name.
+    PyObject* map_name_to_index;
+
+    // The number of values in apValues.
+    Py_ssize_t cValues;
+
+    // The column values, stored as an array.
+    PyObject** apValues;
+};
 
 /*
- * Used to make a new row from an array of column values.
+ * Used to make a new row.  Each row value will be zero and will need a PyObject pointer assigned.
  */
-Row* Row_New(PyObject* description, PyObject* map_name_to_index, Py_ssize_t cValues, PyObject** apValues);
+Row* Row_New(PyObject* description, PyObject* map_name_to_index, Py_ssize_t cValues);
 
-/*
- * Dereferences each object in apValues and frees apValue.  This is the internal format used by rows.
- *
- * cValues: The number of items to free in apValues.
- *
- * apValues: The array of values.  This can be NULL.
- */
-void FreeRowValues(Py_ssize_t cValues, PyObject** apValues);
+void Row_Del(Row* self);
 
 extern PyTypeObject RowType;
 #define Row_Check(op) PyObject_TypeCheck(op, &RowType)

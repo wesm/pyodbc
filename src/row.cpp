@@ -14,29 +14,31 @@
 #include "row.h"
 #include "wrapper.h"
 
-struct Row
+Row* Row_New(PyObject* description, PyObject* map_name_to_index, Py_ssize_t cValues)
 {
-    // A Row must act like a sequence (a tuple of results) to meet the DB API specification, but we also allow values
-    // to be accessed via lowercased column names.  We also supply a `columns` attribute which returns the list of
-    // column names.
+    // Called by other modules to create rows.
 
-    PyObject_HEAD
+    Row* row = PyObject_NEW(Row, &RowType);
 
-    // cursor.description, accessed as _description
-    PyObject* description;
+    if (row)
+    {
+        Py_INCREF(description);
+        row->description = description;
+        Py_INCREF(map_name_to_index);
+        row->map_name_to_index = map_name_to_index;
+        row->apValues          = (PyObject**)pyodbc_malloc(sizeof(PyObject*) * cValues);
+        row->cValues           = cValues;
 
-    // A Python dictionary mapping from column name to a PyInteger, used to access columns by name.
-    PyObject* map_name_to_index;
+        if (!row->apValues)
+        {
+            Row_Del(row);
+            PyErr_NoMemory();
+            row = 0;
+        }
+    }
 
-    // The number of values in apValues.
-    Py_ssize_t cValues;
-
-    // The column values, stored as an array.
-    PyObject** apValues;
-};
-
-#define Row_Check(op) PyObject_TypeCheck(op, &RowType)
-#define Row_CheckExact(op) ((op)->ob_type == &RowType)
+    return row;
+}
 
 void FreeRowValues(Py_ssize_t cValues, PyObject** apValues)
 {
@@ -48,7 +50,7 @@ void FreeRowValues(Py_ssize_t cValues, PyObject** apValues)
     }
 }
 
-static void Row_dealloc(Row* self)
+void Row_Del(Row* self)
 {
     // Note: Now that __newobj__ is available, our variables could be zero...
 
@@ -58,28 +60,6 @@ static void Row_dealloc(Row* self)
     PyObject_Del(self);
 }
 
-Row* Row_New(PyObject* description, PyObject* map_name_to_index, Py_ssize_t cValues, PyObject** apValues)
-{
-    // Called by other modules to create rows.  Takes ownership of apValues.
-
-    Row* row = PyObject_NEW(Row, &RowType);
-
-    if (row)
-    {
-        Py_INCREF(description);
-        row->description = description;
-        Py_INCREF(map_name_to_index);
-        row->map_name_to_index = map_name_to_index;
-        row->apValues          = apValues;
-        row->cValues           = cValues;
-    }
-    else
-    {
-        FreeRowValues(cValues, apValues);
-    }
-
-    return row;
-}
 
 static PyObject*
 Row_getattro(PyObject* o, PyObject* name)
@@ -344,7 +324,7 @@ PyTypeObject RowType =
     "pyodbc.Row",                                           // tp_name
     sizeof(Row),                                            // tp_basicsize
     0,                                                      // tp_itemsize
-    (destructor)Row_dealloc,                                // destructor tp_dealloc
+    (destructor)Row_Del,                                    // destructor tp_dealloc
     0,                                                      // tp_print
     0,                                                      // tp_getattr
     0,                                                      // tp_setattr

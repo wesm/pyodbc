@@ -47,6 +47,7 @@ typedef unsigned long long UINT64;
 #include <unicodeobject.h>
 #include <structmember.h>
 #include <datetime.h>
+#include <tupleobject.h>
 
 // Whoever wrote the datetime C module declared a static variable in the header file.  A properly conforming C/C++
 // compiler will create a new copy in every source file, meaning you can't set the value globally.  Criminy.  We'll
@@ -136,9 +137,11 @@ inline void _strlwr(char* name)
     #define I(expr)
     #define N(expr)
   #endif
+  #define STATIC_ASSERT(cond, msg) static char msg[(cond) ? 1 : 0]
 #else
   #define I(expr)
   #define N(expr)
+  #define STATIC_ASSERT(cond, msg)
 #endif
 
 #ifdef PYODBC_TRACE

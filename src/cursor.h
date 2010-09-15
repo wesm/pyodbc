@@ -16,9 +16,13 @@
 
 struct Connection;
 
+// Information from SQLDescribeCol kept for each column retrieved.
 struct ColumnInfo
 {
-    SQLSMALLINT sql_type;
+    SQLCHAR ColumnName[300];
+    SQLSMALLINT NameLength;  // length of name in ColumnName, excluding terminating NULL.
+
+    SQLSMALLINT DataType;
 
     // The column size from SQLDescribeCol.  For character types, this is the maximum length, not including the NULL
     // terminator.  For binary values, this is the maximum length.  For numeric and decimal values, it is the defined
@@ -26,8 +30,12 @@ struct ColumnInfo
     //
     // This value can be SQL_NO_TOTAL in which case the driver doesn't know the maximum length, such as for LONGVARCHAR
     // fields.
-    SQLULEN column_size;
+    SQLULEN ColumnSize;
 
+    SQLSMALLINT DecimalDigits;
+
+    SQLSMALLINT Nullable;
+    
     // Tells us if an integer type is signed or unsigned.  This is determined after a query using SQLColAttribute.  All
     // of the integer types are the same size whether signed and unsigned, so we can allocate memory ahead of time
     // without knowing this.  We use this during the fetch when converting to a Python integer or long.

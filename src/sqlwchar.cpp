@@ -31,16 +31,10 @@ bool SQLWChar::Convert(PyObject* o)
 {
     Free();
 
-    if (!PyUnicode_Check(o))
-    {
-        PyErr_SetString(PyExc_TypeError, "Unicode required");
-        return false;
-    }
-
     Py_UNICODE* pU   = (Py_UNICODE*)PyUnicode_AS_UNICODE(o);
     Py_ssize_t  lenT = PyUnicode_GET_SIZE(o);
 
-    if (sizeof(SQLWCHAR) == Py_UNICODE_SIZE)
+    if (UnicodeSizesDiffer())
     {
         // The ideal case - SQLWCHAR and Py_UNICODE are the same, so we point into the Unicode object.
 
@@ -148,6 +142,8 @@ void SQLWChar::dump()
         printf("\n\n");
     }
 }
+
+
 
 SQLWCHAR* SQLWCHAR_FromUnicode(const Py_UNICODE* pch, Py_ssize_t len)
 {
