@@ -38,12 +38,9 @@ typedef unsigned long long UINT64;
 #define PY_SSIZE_T_CLEAN 1
 
 #include <Python.h>
-#include <stringobject.h>
-#include <intobject.h>
 #include <floatobject.h>
 #include <longobject.h>
 #include <boolobject.h>
-#include <bufferobject.h>
 #include <unicodeobject.h>
 #include <structmember.h>
 #include <datetime.h>
@@ -151,11 +148,14 @@ inline void DebugTrace(const char* szFmt, ...) { UNUSED(szFmt); }
 #ifdef PYODBC_LEAK_CHECK
 #define pyodbc_malloc(len) _pyodbc_malloc(__FILE__, __LINE__, len)
 void* _pyodbc_malloc(const char* filename, int lineno, size_t len);
+#define pyodbc_realloc(p, len) _pyodbc_realloc(__FILE__, __LINE__, p, len)
+void* _pyodbc_realloc(const char* filename, int lineno, void* p, size_t len);
 void pyodbc_free(void* p);
 void pyodbc_leak_check();
 #else
 #define pyodbc_malloc malloc
 #define pyodbc_free free
+#define pyodbc_realloc realloc
 #endif
 
 void PrintBytes(void* p, size_t len);

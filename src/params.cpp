@@ -4,7 +4,6 @@
 #include "params.h"
 #include "cursor.h"
 #include "connection.h"
-#include "buffer.h"
 #include "wrapper.h"
 #include "errors.h"
 #include "dbspecific.h"
@@ -115,9 +114,9 @@ static bool GetNullInfo(Cursor* cur, Py_ssize_t index, ParamInfo& info)
     return true;
 }
 
-static bool GetStringInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
+static bool GetBytesInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
 {
-    Py_ssize_t len = PyString_GET_SIZE(param);
+    Py_ssize_t len = PyBytes_GET_SIZE(param);
 
     info.ValueType  = SQL_C_CHAR;
     info.ColumnSize = max(len, 1);
@@ -126,7 +125,7 @@ static bool GetStringInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamI
     {
         info.ParameterType     = SQL_VARCHAR;
         info.StrLen_or_Ind     = len;
-        info.ParameterValuePtr = PyString_AS_STRING(param);
+        info.ParameterValuePtr = PyBytes_AS_STRING(param);
     }
     else
     {
@@ -250,22 +249,18 @@ static bool GetTimeInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInf
     return true;
 }
 
-static bool GetIntInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
-{
-    info.Data.l = PyInt_AsLong(param);
-
-    info.ValueType         = SQL_C_LONG;
-    info.ParameterType     = SQL_INTEGER;
-    info.ParameterValuePtr = &info.Data.l;
-    return true;
-}
-
 static bool GetLongInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
 {
-    // TODO: Overflow?
+    // Always sending as 64-bit integer.  Is there a fast way to determine if a PyLong fits into a SQLINTEGER?  (How
+    // fast is _PyLong_NumBits?)  Since this is for parameters, not columns we're retrieving, I'm hoping there aren't
+    // enough for the extra bytes to affect network performance.
+    //
+    // If you look through the longobject code, it isn't very efficient at all.  I would have thought something like
+    // AsLongAndOverflow would be easy, but apparenlty not.
+
     long long value = PyLong_AsLongLong(param);
 
-    info.Data.i64 = (INT64)PyLong_AsLongLong(param);
+    info.Data.i64 = (SQLBIGINT)PyLong_AsLongLong(param);
 
     info.ValueType         = SQL_C_SBIGINT;
     info.ParameterType     = SQL_BIGINT;
@@ -287,6 +282,10 @@ static bool GetFloatInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamIn
 
 static char* CreateDecimalString(long sign, PyObject* digits, long exp)
 {
+    // REVIEW: After looking through how hideously expensive PyLong_AS_LONG is, I'm thinking this needs to be
+    // revisited.  It would be a really bad idea, but the _int value is a string.  That would be pretty handy.
+    // (Of course, a simple method that would produce a string with no exponent would be even handier.)
+
     long count = (long)PyTuple_GET_SIZE(digits);
 
     char* pch;
@@ -304,7 +303,7 @@ static char* CreateDecimalString(long sign, PyObject* digits, long exp)
             if (sign)
                 *p++ = '-';
             for (long i = 0; i < count; i++)
-                *p++ = (char)('0' + PyInt_AS_LONG(PyTuple_GET_ITEM(digits, i)));
+                *p++ = (char)('0' + PyLong_AS_LONG(PyTuple_GET_ITEM(digits, i)));
             for (long i = 0; i < exp; i++)
                 *p++ = '0';
             *p = 0;
@@ -323,10 +322,10 @@ static char* CreateDecimalString(long sign, PyObject* digits, long exp)
                 *p++ = '-';
             int i = 0;
             for (; i < (count + exp); i++)
-                *p++ = (char)('0' + PyInt_AS_LONG(PyTuple_GET_ITEM(digits, i)));
+                *p++ = (char)('0' + PyLong_AS_LONG(PyTuple_GET_ITEM(digits, i)));
             *p++ = '.';
             for (; i < count; i++)
-                *p++ = (char)('0' + PyInt_AS_LONG(PyTuple_GET_ITEM(digits, i)));
+                *p++ = (char)('0' + PyLong_AS_LONG(PyTuple_GET_ITEM(digits, i)));
             *p++ = 0;
         }
     }
@@ -349,7 +348,7 @@ static char* CreateDecimalString(long sign, PyObject* digits, long exp)
                 *p++ = '0';
 
             for (int i = 0; i < count; i++)
-                *p++ = (char)('0' + PyInt_AS_LONG(PyTuple_GET_ITEM(digits, i)));
+                *p++ = (char)('0' + PyLong_AS_LONG(PyTuple_GET_ITEM(digits, i)));
             *p++ = 0;
         }
     }
@@ -369,9 +368,9 @@ static bool GetDecimalInfo(Cursor* cur, Py_ssize_t index, PyObject* param, Param
     if (!t)
         return false;
 
-    long       sign   = PyInt_AsLong(PyTuple_GET_ITEM(t.Get(), 0));
+    long       sign   = PyLong_AsLong(PyTuple_GET_ITEM(t.Get(), 0));
     PyObject*  digits = PyTuple_GET_ITEM(t.Get(), 1);
-    long       exp    = PyInt_AsLong(PyTuple_GET_ITEM(t.Get(), 2));
+    long       exp    = PyLong_AsLong(PyTuple_GET_ITEM(t.Get(), 2));
 
     Py_ssize_t count = PyTuple_GET_SIZE(digits);
 
@@ -414,49 +413,12 @@ static bool GetDecimalInfo(Cursor* cur, Py_ssize_t index, PyObject* param, Param
     return true;
 }
 
-static bool GetBufferInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
-{
-    info.ValueType = SQL_C_BINARY;
-
-    const char* pb;
-    Py_ssize_t  cb = PyBuffer_GetMemory(param, &pb);
-
-    if (cb != -1 && cb <= cur->cnxn->binary_maxlength)
-    {
-        // There is one segment, so we can bind directly into the buffer object.
-
-        info.ParameterType     = SQL_VARBINARY;
-        info.ParameterValuePtr = (SQLPOINTER)pb;
-        info.BufferLength      = cb;
-        info.ColumnSize        = max(cb, 1);
-        info.StrLen_or_Ind     = cb;
-    }
-    else
-    {
-        // There are multiple segments, so we'll provide the data at execution time.  Pass the PyObject pointer as
-        // the parameter value which will be pased back to us when the data is needed.  (If we release threads, we
-        // need to up the refcount!)
-
-        info.ParameterType     = SQL_LONGVARBINARY;
-        info.ParameterValuePtr = param;
-        info.ColumnSize        = PyBuffer_Size(param);
-        info.BufferLength      = sizeof(PyObject*); // How big is ParameterValuePtr; ODBC copies it and gives it back in SQLParamData
-        info.StrLen_or_Ind     = SQL_LEN_DATA_AT_EXEC(PyBuffer_Size(param));
-    }
-
-    return true;
-}
-
-
 static bool GetParameterInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
 {
     // Binds the given parameter and populates `info`.
 
     if (param == Py_None)
         return GetNullInfo(cur, index, info);
-
-    if (PyString_Check(param))
-        return GetStringInfo(cur, index, param, info);
 
     if (PyUnicode_Check(param))
         return GetUnicodeInfo(cur, index, param, info);
@@ -473,9 +435,6 @@ static bool GetParameterInfo(Cursor* cur, Py_ssize_t index, PyObject* param, Par
     if (PyTime_Check(param))
         return GetTimeInfo(cur, index, param, info);
 
-    if (PyInt_Check(param))
-        return GetIntInfo(cur, index, param, info);
-
     if (PyLong_Check(param))
         return GetLongInfo(cur, index, param, info);
 
@@ -485,10 +444,10 @@ static bool GetParameterInfo(Cursor* cur, Py_ssize_t index, PyObject* param, Par
     if (PyDecimal_Check(param))
         return GetDecimalInfo(cur, index, param, info);
 
-    if (PyBuffer_Check(param))
-        return GetBufferInfo(cur, index, param, info);
+    if (PyBytes_Check(param))
+        return GetBytesInfo(cur, index, param, info);
 
-    RaiseErrorV("HY105", ProgrammingError, "Invalid parameter type.  param-index=%zd param-type=%s", index, param->ob_type->tp_name);
+    RaiseErrorV(L"HY105", ProgrammingError, "Invalid parameter type.  param-index=%zd param-type=%s", index, param->ob_type->tp_name);
     return false;
 }
 
@@ -575,30 +534,16 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
         SQLRETURN ret;
         SQLSMALLINT cParamsT = 0;
         const char* szErrorFunc = "SQLPrepare";
-        if (PyString_Check(pSql))
+        SQLWChar sql(pSql);
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLPrepareW(cur->hstmt, sql, SQL_NTS);
+        if (SQL_SUCCEEDED(ret))
         {
-            TRACE("SQLPrepare(%s)\n", PyString_AS_STRING(pSql));
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLPrepare(cur->hstmt, (SQLCHAR*)PyString_AS_STRING(pSql), SQL_NTS);
-            if (SQL_SUCCEEDED(ret))
-            {
-                szErrorFunc = "SQLNumParams";
-                ret = SQLNumParams(cur->hstmt, &cParamsT);
-            }
-            Py_END_ALLOW_THREADS
+            szErrorFunc = "SQLNumParams";
+            ret = SQLNumParams(cur->hstmt, &cParamsT);
         }
-        else
-        {
-            SQLWChar sql(pSql);
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLPrepareW(cur->hstmt, sql, SQL_NTS);
-            if (SQL_SUCCEEDED(ret))
-            {
-                szErrorFunc = "SQLNumParams";
-                ret = SQLNumParams(cur->hstmt, &cParamsT);
-            }
-            Py_END_ALLOW_THREADS
-        }
+        Py_END_ALLOW_THREADS
+
 
         if (cur->cnxn->hdbc == SQL_NULL_HANDLE)
         {

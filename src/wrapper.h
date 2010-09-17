@@ -2,16 +2,16 @@
 #ifndef _WRAPPER_H_
 #define _WRAPPER_H_
 
-class Object
+#include "sqlwchar.h"
+
+struct Object
 {
-private:
     PyObject* p;
 
     // GCC freaks out if these are private, but it doesn't use them (?)
     // Object(const Object& illegal);
     // void operator=(const Object& illegal);
 
-public:
     Object(PyObject* _p = 0)
     {
         p = _p;
@@ -54,5 +54,50 @@ public:
         return p;
     }
 };
+
+struct Unicode : public Object
+{
+    bool Append(PyObject* other)
+    {
+        if (!other)
+            return false;
+
+        if (p == 0)
+        {
+            Attach(other);
+            Py_INCREF(other);
+            return true;
+        }
+
+        PyUnicode_Append(&p, other);
+        return p != 0;
+    }
+
+    bool Append(const char* s)
+    {
+        Object other(PyUnicode_FromString(s));
+        return Append(other);
+    }
+
+    bool Append(const SQLWCHAR* s)
+    {
+        Object other(PyUnicode_FromSQLWCHAR(s));
+        return Append(other);
+    }
+
+    bool Append(long l)
+    {
+        Object other(PyLong_FromLong(l));
+        return Append(other);
+    }
+
+    Py_ssize_t Size()
+    {
+        if (!p)
+            return 0;
+        return PyUnicode_GetSize(p);
+    }
+};
+
 
 #endif // _WRAPPER_H_

@@ -45,29 +45,8 @@ Connection_Validate(PyObject* self)
     return cnxn;
 }
 
-static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi, long timeout)
+static bool Connect(PyObject* pConnectString, HDBC hdbc, long timeout)
 {
-    // This should have been checked by the global connect function.
-    I(PyString_Check(pConnectString) || PyUnicode_Check(pConnectString));
-
-    const int cchMax = 600;
-
-    if (PySequence_Length(pConnectString) >= cchMax)
-    {
-        PyErr_SetString(PyExc_TypeError, "connection string too long");
-        return false;
-    }
-
-    // The driver manager determines if the app is a Unicode app based on whether we call SQLDriverConnectA or
-    // SQLDriverConnectW.  Some drivers, notably Microsoft Access/Jet, change their behavior based on this, so we try
-    // the Unicode version first.  (The Access driver only supports Unicode text, but SQLDescribeCol returns SQL_CHAR
-    // instead of SQL_WCHAR if we connect with the ANSI version.  Obviously this causes lots of errors since we believe
-    // what it tells us (SQL_CHAR).)
-
-    // Python supports only UCS-2 and UCS-4, so we shouldn't need to worry about receiving surrogate pairs.  However,
-    // Windows does use UCS-16, so it is possible something would be misinterpreted as one.  We may need to examine
-    // this more.
-
     SQLRETURN ret;
 
     if (timeout > 0)
@@ -79,50 +58,9 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi, long timeou
             RaiseErrorFromHandle("SQLSetConnectAttr(SQL_ATTR_LOGIN_TIMEOUT)", hdbc, SQL_NULL_HANDLE);
     }
 
-    if (!fAnsi)
-    {
-        SQLWChar connectString(pConnectString);
-        Py_BEGIN_ALLOW_THREADS
-        ret = SQLDriverConnectW(hdbc, 0, connectString, (SQLSMALLINT)connectString.size(), 0, 0, 0, SQL_DRIVER_NOPROMPT);
-        Py_END_ALLOW_THREADS
-        if (SQL_SUCCEEDED(ret))
-            return true;
-
-        // The Unicode function failed.  If the error is that the driver doesn't have a Unicode version (IM001), continue
-        // to the ANSI version.
-
-        PyObject* error = GetErrorFromHandle("SQLDriverConnectW", hdbc, SQL_NULL_HANDLE);
-        if (!HasSqlState(error, "IM001"))
-        {
-            RaiseErrorFromException(error);
-            return false;
-        }
-        Py_XDECREF(error);
-    }
-        
-    SQLCHAR szConnect[cchMax];
-    if (PyUnicode_Check(pConnectString))
-    {
-        Py_UNICODE* p = PyUnicode_AS_UNICODE(pConnectString);
-        for (Py_ssize_t i = 0, c = PyUnicode_GET_SIZE(pConnectString); i <= c; i++)
-        {
-            if (p[i] > 0xFF)
-            {
-                PyErr_SetString(PyExc_TypeError, "A Unicode connection string was supplied but the driver does "
-                                "not have a Unicode connect function");
-                return false;
-            }
-            szConnect[i] = (char)p[i];
-        }
-    }
-    else
-    {
-        const char* p = PyString_AS_STRING(pConnectString);
-        memcpy(szConnect, p, PyString_GET_SIZE(pConnectString) + 1);
-    }
-
+    SQLWChar connectString(pConnectString);
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLDriverConnect(hdbc, 0, szConnect, SQL_NTS, 0, 0, 0, SQL_DRIVER_NOPROMPT);
+    ret = SQLDriverConnectW(hdbc, 0, connectString, (SQLSMALLINT)connectString.size(), 0, 0, 0, SQL_DRIVER_NOPROMPT);
     Py_END_ALLOW_THREADS
     if (SQL_SUCCEEDED(ret))
         return true;
@@ -133,7 +71,7 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi, long timeou
 }
 
 
-PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi, bool fUnicodeResults, long timeout)
+PyObject* Connection_New(Unicode& cstring, bool fAutoCommit, long timeout)
 {
     // pConnectString
     //   A string or unicode object.  (This must be checked by the caller.)
@@ -156,7 +94,7 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi,
     if (!SQL_SUCCEEDED(ret))
         return RaiseErrorFromHandle("SQLAllocHandle", SQL_NULL_HANDLE, SQL_NULL_HANDLE);
 
-    if (!Connect(pConnectString, hdbc, fAnsi, timeout))
+    if (!Connect(cstring, hdbc, timeout))
     {
         // Connect has already set an exception.
         Py_BEGIN_ALLOW_THREADS
@@ -185,7 +123,6 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi,
     cnxn->nAutoCommit     = fAutoCommit ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     cnxn->searchescape    = 0;
     cnxn->timeout         = 0;
-    cnxn->unicode_results = fUnicodeResults;
     cnxn->conv_count      = 0;
     cnxn->conv_types      = 0;
     cnxn->conv_funcs      = 0;
@@ -219,7 +156,7 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi,
     // Gather connection-level information we'll need later.
     //
 
-    Object info(GetConnectionInfo(pConnectString, cnxn));
+    Object info(GetConnectionInfo(cstring.Get(), cnxn));
 
     if (!info.IsValid())
     {
@@ -544,12 +481,12 @@ Connection_getinfo(PyObject* self, PyObject* args)
     if (i == _countof(aInfoTypes))
         return RaiseErrorV(0, ProgrammingError, "Invalid getinfo value: %d", infotype);
 
-    char szBuffer[0x1000];
+    SQLWCHAR szBuffer[1024];
     SQLSMALLINT cch = 0;
 
     SQLRETURN ret;
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLGetInfo(cnxn->hdbc, (SQLUSMALLINT)infotype, szBuffer, sizeof(szBuffer), &cch);
+    ret = SQLGetInfoW(cnxn->hdbc, (SQLUSMALLINT)infotype, szBuffer, sizeof(szBuffer), &cch);
     Py_END_ALLOW_THREADS
     if (!SQL_SUCCEEDED(ret))
     {
@@ -557,35 +494,81 @@ Connection_getinfo(PyObject* self, PyObject* args)
         return 0;
     }
 
-    PyObject* result = 0;
 
     switch (aInfoTypes[i].datatype)
     {
     case GI_YESNO:
-        result = (szBuffer[0] == 'Y') ? Py_True : Py_False;
+    {
+        SQLWCHAR buffer[2];
+        SQLSMALLINT length = 0;
+
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLGetInfoW(cnxn->hdbc, (SQLUSMALLINT)infotype, buffer, sizeof(buffer), &length);
+        Py_END_ALLOW_THREADS
+        if (!SQL_SUCCEEDED(ret))
+        {
+            RaiseErrorFromHandle("SQLGetInfo", cnxn->hdbc, SQL_NULL_HANDLE);
+            return 0;
+        }
+
+        PyObject* result = (buffer[0] == 'Y') ? Py_True : Py_False;
         Py_INCREF(result);
-        break;
-            
+        return result;
+    }
+    
     case GI_STRING:
-        result = PyString_FromStringAndSize(szBuffer, (Py_ssize_t)cch);
-        break;
+    {
+        SQLWCHAR buffer[1024];
+        SQLSMALLINT length = 0;
+
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLGetInfoW(cnxn->hdbc, (SQLUSMALLINT)infotype, buffer, sizeof(buffer), &length);
+        Py_END_ALLOW_THREADS
+        if (!SQL_SUCCEEDED(ret))
+        {
+            RaiseErrorFromHandle("SQLGetInfo", cnxn->hdbc, SQL_NULL_HANDLE);
+            return 0;
+        }
+
+        return PyUnicode_FromSQLWCHAR(buffer, length);
+    }
         
     case GI_UINTEGER:
     {
-        SQLUINTEGER n = *(SQLUINTEGER*)szBuffer; // Does this work on PPC or do we need a union?
-        if (n <= (SQLUINTEGER)PyInt_GetMax())
-            result = PyInt_FromLong((long)n);
-        else
-            result = PyLong_FromUnsignedLong(n);
-        break;
+        SQLUINTEGER n;
+        SQLSMALLINT length = 0;
+
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLGetInfoW(cnxn->hdbc, (SQLUSMALLINT)infotype, &n, 0, &length);
+        Py_END_ALLOW_THREADS
+        if (!SQL_SUCCEEDED(ret))
+        {
+            RaiseErrorFromHandle("SQLGetInfo", cnxn->hdbc, SQL_NULL_HANDLE);
+            return 0;
+        }
+
+        return PyLong_FromUnsignedLong((unsigned long)n);
     }
     
     case GI_USMALLINT:
-        result = PyInt_FromLong(*(SQLUSMALLINT*)szBuffer);
-        break;
+    {
+        SQLUSMALLINT n;
+        SQLSMALLINT length = 0;
+
+        Py_BEGIN_ALLOW_THREADS
+        ret = SQLGetInfoW(cnxn->hdbc, (SQLUSMALLINT)infotype, &n, 0, &length);
+        Py_END_ALLOW_THREADS
+        if (!SQL_SUCCEEDED(ret))
+        {
+            RaiseErrorFromHandle("SQLGetInfo", cnxn->hdbc, SQL_NULL_HANDLE);
+            return 0;
+        }
+        
+        return PyLong_FromUnsignedLong((unsigned long)n);
+    }
     }
 
-    return result;
+    return 0;
 }
 
 
@@ -703,17 +686,17 @@ Connection_getsearchescape(Connection* self, void* closure)
     
     if (!self->searchescape)
     {
-        char sz[8] = { 0 };
+        SQLWCHAR sz[8] = { 0 };
         SQLSMALLINT cch = 0;
 
         SQLRETURN ret;
         Py_BEGIN_ALLOW_THREADS
-        ret = SQLGetInfo(self->hdbc, SQL_SEARCH_PATTERN_ESCAPE, &sz, _countof(sz), &cch);
+        ret = SQLGetInfoW(self->hdbc, SQL_SEARCH_PATTERN_ESCAPE, &sz, sizeof(sz), &cch);
         Py_END_ALLOW_THREADS
         if (!SQL_SUCCEEDED(ret))
             return RaiseErrorFromHandle("SQLGetInfo", self->hdbc, SQL_NULL_HANDLE);
 
-        self->searchescape = PyString_FromStringAndSize(sz, (Py_ssize_t)cch);
+        self->searchescape = PyUnicode_FromSQLWCHAR(sz, (Py_ssize_t)cch);
     }
 
     Py_INCREF(self->searchescape);
@@ -730,7 +713,7 @@ Connection_gettimeout(PyObject* self, void* closure)
     if (!cnxn)
         return 0;
 
-    return PyInt_FromLong(cnxn->timeout);
+    return PyLong_FromLong(cnxn->timeout);
 }
 
 static int
@@ -747,7 +730,7 @@ Connection_settimeout(PyObject* self, PyObject* value, void* closure)
         PyErr_SetString(PyExc_TypeError, "Cannot delete the timeout attribute.");
         return -1;
     }
-    int timeout = PyInt_AsLong(value);
+    int timeout = PyLong_AsLong(value);
     if (timeout == -1 && PyErr_Occurred())
         return -1;
     if (timeout < 0)
@@ -903,7 +886,6 @@ static PyGetSetDef Connection_getseters[] = {
 PyTypeObject ConnectionType =
 {
     PyObject_HEAD_INIT(0)
-    0,                                                      // ob_size
     "pyodbc.Connection",                                    // tp_name
     sizeof(Connection),                                     // tp_basicsize
     0,                                                      // tp_itemsize

@@ -12,6 +12,7 @@
 #ifndef CONNECTION_H
 #define CONNECTION_H
 
+struct Unicode;
 struct Cursor;
 
 extern PyTypeObject ConnectionType;
@@ -39,9 +40,6 @@ struct Connection
 
     // The column size of datetime columns, obtained from SQLGetInfo(), used to determine the datetime precision.
     int datetime_precision;
-
-    // If true, then the strings in the rows are returned as unicode objects.
-    bool unicode_results;
 
     // The connection timeout in seconds.
     int timeout;
@@ -71,6 +69,6 @@ struct Connection
  * Used by the module's connect function to create new connection objects.  If unable to connect to the database, an
  * exception is set and zero is returned.
  */
-PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi, bool fUnicodeResults, long timeout);
+PyObject* Connection_New(Unicode& cstring, bool fAutoCommit, long timeout);
 
 #endif

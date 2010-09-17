@@ -48,7 +48,13 @@ public:
     }
 };
 
+#if defined(MS_WIN32) && Py_UNICODE_SIZE == 2
+inline PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* s) { return PyUnicode_FromWideChar((const wchar_t*)s, wcslen(s)); }
+inline PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* s, size_t l) { return PyUnicode_FromWideChar((const wchar_t*)s, l); }
+#else
+PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz);
 PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz, Py_ssize_t cch);
+#endif
 
 bool sqlwchar_copy(SQLWCHAR* pdest, const Py_UNICODE* psrc, Py_ssize_t len);
 
@@ -58,5 +64,7 @@ inline bool UnicodeSizesDiffer()
 {
     return sizeof(SQLWCHAR) != sizeof(Py_UNICODE);
 }
+
+bool SQLWCHAR_Same(const SQLWCHAR* lhs, const Py_UNICODE* rhs);
 
 #endif // _PYODBCSQLWCHAR_H

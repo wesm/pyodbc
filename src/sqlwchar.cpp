@@ -84,6 +84,21 @@ bool sqlwchar_copy(SQLWCHAR* pdest, const Py_UNICODE* psrc, Py_ssize_t len)
     return true;
 }
 
+inline Py_ssize_t SQLWCHAR_len(const SQLWCHAR* sz)
+{
+    Py_ssize_t len = 0;
+    while (*sz++)
+        len++;
+    return len;
+}
+
+#if defined(MS_WIN32) && Py_UNICODE_SIZE == 2
+// already defined as inlines
+#else
+PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz)
+{
+    return PyUnicode_FromSQLWCHAR(sz, SQLWCHAR_len(sz));
+}
 
 PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz, Py_ssize_t cch)
 {
@@ -116,6 +131,7 @@ PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz, Py_ssize_t cch)
     
     return result.Detach();
 }
+#endif
 
 void SQLWChar::dump()
 {
@@ -161,5 +177,19 @@ SQLWCHAR* SQLWCHAR_FromUnicode(const Py_UNICODE* pch, Py_ssize_t len)
         }
     }
     return p;
+}
+
+bool SQLWCHAR_Same(const SQLWCHAR* lhs, const Py_UNICODE* rhs)
+{
+    // Technically we need to know which is wider.  Since we're using this for SQLSTATE comparisons right now, we'll
+    // cast to SQLWCHAR.
+
+    while (*lhs != 0)
+    {
+        if (*lhs != (SQLWCHAR)*rhs)
+            return false;
+    }
+
+    return *rhs == 0;
 }
 

@@ -121,12 +121,12 @@ public:
 
             char* stackBuffer = buffer;
 
-            if (dataType == SQL_C_CHAR || dataType == SQL_C_BINARY)
+            if (dataType == SQL_C_BINARY)
             {
-                bufferOwner = PyString_FromStringAndSize(0, newSize);
-                buffer      = bufferOwner ? PyString_AS_STRING(bufferOwner) : 0;
+                bufferOwner = PyBytes_FromStringAndSize(0, newSize);
+                buffer      = bufferOwner ? PyBytes_AS_STRING(bufferOwner) : 0;
             }
-            else if (sizeof(SQLWCHAR) == Py_UNICODE_SIZE)
+            else if (dataType == SQL_C_WCHAR && sizeof(SQLWCHAR) == Py_UNICODE_SIZE)
             {
                 // Allocate directly into a Unicode object.
                 bufferOwner = PyUnicode_FromUnicode(0, newSize / element_size);
@@ -148,11 +148,11 @@ public:
             return true;
         }
 
-        if (PyString_CheckExact(bufferOwner))
+        if (PyBytes_CheckExact(bufferOwner))
         {
-            if (_PyString_Resize(&bufferOwner, newSize) == -1)
+            if (_PyBytes_Resize(&bufferOwner, newSize) == -1)
                 return false;
-            buffer = PyString_AS_STRING(bufferOwner);
+            buffer = PyBytes_AS_STRING(bufferOwner);
         }
         else if (PyUnicode_CheckExact(bufferOwner))
         {
@@ -162,7 +162,7 @@ public:
         }
         else
         {
-            char* tmp = (char*)realloc(buffer, newSize);
+            char* tmp = (char*)pyodbc_realloc(buffer, newSize);
             if (tmp == 0)
                 return false;
             buffer = tmp;
@@ -182,8 +182,11 @@ public:
 
         if (usingStack)
         {
-            if (dataType == SQL_C_CHAR || dataType == SQL_C_BINARY)
-                return PyString_FromStringAndSize(buffer, bytesUsed);
+            if (dataType == SQL_C_BINARY)
+                return PyBytes_FromStringAndSize(buffer, bytesUsed);
+
+            if (dataType == SQL_C_CHAR)
+                return PyUnicode_FromStringAndSize(buffer, bytesUsed);
 
             if (sizeof(SQLWCHAR) == Py_UNICODE_SIZE)
                 return PyUnicode_FromUnicode((const Py_UNICODE*)buffer, bytesUsed / element_size);
@@ -191,9 +194,9 @@ public:
             return PyUnicode_FromSQLWCHAR((const SQLWCHAR*)buffer, bytesUsed / element_size);
         }
 
-        if (PyString_CheckExact(bufferOwner))
+        if (PyBytes_CheckExact(bufferOwner))
         {
-            if (_PyString_Resize(&bufferOwner, bytesUsed) == -1)
+            if (_PyBytes_Resize(&bufferOwner, bytesUsed) == -1)
                 return 0;
             PyObject* tmp = bufferOwner;
             bufferOwner = 0;
@@ -224,7 +227,7 @@ public:
 static PyObject*
 GetDataString(Cursor* cur, Py_ssize_t iCol)
 {
-    // Returns a String or Unicode object for character and binary data.
+    // Returns a Bytes or Unicode object for character and binary data.
 
     // NULL terminator notes:
     //
@@ -259,12 +262,6 @@ GetDataString(Cursor* cur, Py_ssize_t iCol)
     case SQL_LONGVARCHAR:
     case SQL_GUID:
     case SQL_SS_XML:
-        if (cur->cnxn->unicode_results)
-            nTargetType  = SQL_C_WCHAR;
-        else
-            nTargetType  = SQL_C_CHAR;
-        break;
-
     case SQL_WCHAR:
     case SQL_WVARCHAR:
     case SQL_WLONGVARCHAR:
@@ -361,26 +358,6 @@ GetDataUser(Cursor* cur, Py_ssize_t iCol, int conv)
     PyObject* result = PyObject_CallFunction(cur->cnxn->conv_funcs[conv], "(O)", value);
     Py_DECREF(value);
     return result;
-}
-
-
-static PyObject*
-GetDataBuffer(Cursor* cur, Py_ssize_t iCol)
-{
-    PyObject* str = GetDataString(cur, iCol);
-
-    if (str == Py_None)
-        return str;
-
-    PyObject* buffer = 0;
-
-    if (str)
-    {
-        buffer = PyBuffer_FromObject(str, 0, PyString_GET_SIZE(str));
-        Py_DECREF(str);         // If no buffer, release it.  If buffer, the buffer owns it.
-    }
-
-    return buffer;
 }
 
 static PyObject*
@@ -480,9 +457,9 @@ GetDataLong(Cursor* cur, Py_ssize_t iCol)
         Py_RETURN_NONE;
 
     if (pinfo->is_unsigned)
-        return PyInt_FromLong(*(SQLINTEGER*)&value);
+        return PyLong_FromUnsignedLong((unsigned long)value);
 
-    return PyInt_FromLong(value);
+    return PyLong_FromLong(value);
 }
 
 static PyObject* GetDataLongLong(Cursor* cur, Py_ssize_t iCol)
@@ -625,7 +602,8 @@ GetData(Cursor* cur, Py_ssize_t iCol)
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
-        return GetDataBuffer(cur, iCol);
+        // Will return a bytes object.
+        return GetDataString(cur, iCol);
 
     case SQL_DECIMAL:
     case SQL_NUMERIC:
@@ -662,6 +640,6 @@ GetData(Cursor* cur, Py_ssize_t iCol)
         return GetSqlServerTime(cur, iCol);
     }
 
-    return RaiseErrorV("HY106", ProgrammingError, "ODBC SQL type %d is not yet supported.  column-index=%zd  type=%d",
+    return RaiseErrorV(L"HY106", ProgrammingError, "ODBC SQL type %d is not yet supported.  column-index=%zd  type=%d",
                        (int)pinfo->sql_type, iCol, (int)pinfo->sql_type);
 }

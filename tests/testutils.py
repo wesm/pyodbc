@@ -33,21 +33,21 @@ def add_to_path():
                 sys.path.insert(0, root)
                 return
                 
-    print >>sys.stderr, 'Did not find the pyodbc library in the build directory.  Will use an installed version.'
+    print('Did not find the pyodbc library in the build directory.  Will use an installed version.', file=sys.stderr)
 
 
 def print_library_info(cnxn):
     import pyodbc
-    print 'python:  %s' % sys.version
-    print 'pyodbc:  %s %s' % (pyodbc.version, os.path.abspath(pyodbc.__file__))
-    print 'odbc:    %s' % cnxn.getinfo(pyodbc.SQL_ODBC_VER)
-    print 'driver:  %s %s' % (cnxn.getinfo(pyodbc.SQL_DRIVER_NAME), cnxn.getinfo(pyodbc.SQL_DRIVER_VER))
-    print '         supports ODBC version %s' % cnxn.getinfo(pyodbc.SQL_DRIVER_ODBC_VER)
-    print 'os:      %s' % platform.system()
-    print 'unicode: Py_Unicode=%s SQLWCHAR=%s' % (pyodbc.UNICODE_SIZE, pyodbc.SQLWCHAR_SIZE)
+    print('python:  {0}'.format(sys.version))
+    print('pyodbc:  {0} {1}'.format(pyodbc.version, os.path.abspath(pyodbc.__file__)))
+    print('odbc:    {0}'.format(cnxn.getinfo(pyodbc.SQL_ODBC_VER)))
+    print('driver:  {0} {1}'.format(cnxn.getinfo(pyodbc.SQL_DRIVER_NAME), cnxn.getinfo(pyodbc.SQL_DRIVER_VER)))
+    print('         supports ODBC version {0}'.format(cnxn.getinfo(pyodbc.SQL_DRIVER_ODBC_VER)))
+    print('os:      {0}'.format(platform.system()))
+    print('unicode: Py_Unicode={0} SQLWCHAR={1}'.format(pyodbc.UNICODE_SIZE, pyodbc.SQLWCHAR_SIZE))
 
     if platform.system() == 'Windows':
-        print '        %s' % ' '.join([s for s in platform.win32_ver() if s])
+        print('        {0}'.format(' '.join([s for s in platform.win32_ver() if s])))
 
 
 
@@ -80,7 +80,7 @@ def load_setup_connection_string(section):
     file exists but cannot be parsed, an exception is raised.
     """
     from os.path import exists, join, dirname, splitext, basename
-    from ConfigParser import SafeConfigParser
+    from configparser import SafeConfigParser
     
     FILENAME = 'setup.cfg'
     KEY      = 'connection-string'

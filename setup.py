@@ -28,7 +28,7 @@ class VersionCommand(Command):
 
     def run(self):
         version_str, version = get_version()
-        print version_str
+        print(version_str)
     
 
 def main():
@@ -160,8 +160,8 @@ def get_version():
         name, numbers = _get_version_git()
 
     if not numbers:
-        print 'WARNING: Unable to determine version.  Using 2.1.0.0'
-        name, numbers = '2.1.0-unsupported', [2,1,0,0]
+        print('WARNING: Unable to determine version.  Using 3.1.0.0')
+        name, numbers = '3.1.0-unsupported', [3,1,0,0]
 
     return name, numbers
             
@@ -182,12 +182,12 @@ def _get_version_pkginfo():
 
 
 def _get_version_git():
-    n, result = getoutput('git describe --tags --match 2.*')
+    n, result = getoutput('git describe --tags --match v3.*')
     if n:
-        print 'WARNING: git describe failed with: %s %s' % (n, result)
+        print('WARNING: git describe failed with: {0} {1}'.format(n, result))
         return None, None
 
-    match = re.match(r'(\d+).(\d+).(\d+) (?: -(\d+)-g[0-9a-z]+)?', result, re.VERBOSE)
+    match = re.match(r'v(\d+).(\d+).(\d+) (?: -(\d+)-g[0-9a-z]+)?', result, re.VERBOSE)
     if not match:
         return None, None
 

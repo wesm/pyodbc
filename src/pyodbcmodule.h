@@ -54,9 +54,9 @@ inline bool lowercase()
     return PyObject_GetAttrString(pModule, "lowercase") == Py_True;
 }
 
-extern char chDecimal;
-extern char chGroupSeparator;
-extern char chCurrencySymbol;
+extern SQLWCHAR chDecimal;
+extern SQLWCHAR chGroupSeparator;
+extern SQLWCHAR chCurrencySymbol;
 
 
 #endif // _PYPGMODULE_H

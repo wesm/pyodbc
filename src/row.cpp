@@ -81,8 +81,7 @@ Row* Row_New(PyObject* description, PyObject* map_name_to_index, Py_ssize_t cVal
     return row;
 }
 
-static PyObject*
-Row_getattro(PyObject* o, PyObject* name)
+static PyObject* Row_getattro(PyObject* o, PyObject* name)
 {
     // Called to handle 'row.colname'.
 
@@ -93,7 +92,7 @@ Row_getattro(PyObject* o, PyObject* name)
     if (index)
     {
         // REVIEW: How is this going to work on a 64-bit system?  First, will the value be a PyInt or a PyLong?  
-        Py_ssize_t i = PyInt_AsSsize_t(index);
+        Py_ssize_t i = PyLong_AsSsize_t(index);
         Py_INCREF(self->apValues[i]);
         return self->apValues[i];
     }
@@ -122,19 +121,61 @@ Row_contains(Row *self, PyObject *el)
 	return cmp;
 }
 
-static PyObject *
-Row_item(Row* self, Py_ssize_t i)
+static PyObject* Row_item(Row* self, Py_ssize_t i)
 {
     // Apparently, negative indexes are handled by magic ;) -- they never make it here.
 
 	if (i < 0 || i >= self->cValues)
     {
-		PyErr_SetString(PyExc_IndexError, "tuple index out of range");
-		return NULL;
+		PyErr_SetString(PyExc_IndexError, "index out of range");
+		return 0;
 	}
 
 	Py_INCREF(self->apValues[i]);
 	return self->apValues[i];
+}
+
+static PyObject* Row_subscript(Row* row, PyObject* item)
+{
+    // The handler for row[1] and row[1:2].
+
+    if (PyIndex_Check(item))
+    {
+        Py_ssize_t i = PyNumber_AsSsize_t(item, PyExc_IndexError);
+        if (i == -1 && PyErr_Occurred())
+            return 0;
+        if (i < 0)
+            i += row->cValues;
+        return Row_item(row, i);
+    }
+
+    if (PySlice_Check(item))
+    {
+        Py_ssize_t start, stop, step, slicelength;
+        if (PySlice_GetIndicesEx((PySliceObject*)item, row->cValues, &start, &stop, &step, &slicelength) < 0)
+            return 0;
+        if (slicelength <= 0)
+            return PyTuple_New(0);
+
+        // Note: Unlike a tuple, users *can* replace elements in a row, so we do not return the same object for
+        // `row[:]`.  If the user want's a copy, they get a copy.  (Also we'll always return a tuple this way.)
+
+        PyObject* result = PyTuple_New(slicelength);
+        if (!result)
+            return 0;
+
+        Py_ssize_t src = start;
+        for (Py_ssize_t dest = 0; dest < slicelength; dest += 1, src += step)
+        {
+            Py_INCREF(row->apValues[src]);
+            PyTuple_SET_ITEM(result, dest, row->apValues[src]);
+        }
+
+        return result;
+    }
+
+    PyErr_Format(PyExc_TypeError, "row indexes must be integers, not %s.200s", Py_TYPE(item)->tp_name);
+    return 0;
 }
 
 
@@ -164,81 +205,73 @@ Row_setattro(PyObject* o, PyObject *name, PyObject* v)
     PyObject* index = PyDict_GetItem(self->map_name_to_index, name);
 
     if (index)
-        return Row_ass_item(self, PyInt_AsSsize_t(index), v);
+        return Row_ass_item(self, PyLong_AsSsize_t(index), v);
 
     return PyObject_GenericSetAttr(o, name, v);
 }
 
-static PyObject *
-Row_slice(PyObject* o, Py_ssize_t iFirst, Py_ssize_t iMax)
+static PyObject* Row_slice(PyObject* o, Py_ssize_t iFirst, Py_ssize_t iMax)
 {
-    // Note: Negative indexes will have already been converted to positive ones before this is called.  It is possible
-    // for the iMax value to be too high if row[:] or row[1:] is used.
-    //
-    // I don't think iFirst can ever be below zero, but the tuple slice function checks for it, so we will too.
-
-    Row* self = (Row*)o;
-    
+	// Note: Negative indexes will have already been converted to positive ones before this is called.	It is possible
+	// for the iMax value to be too high if row[:] or row[1:] is used.
+	//
+	// I don't think iFirst can ever be below zero, but the tuple slice function checks for it, so we will too.
+ 
+	Row* self = (Row*)o;
+	
 	if (iFirst < 0)
 		iFirst = 0;
 	if (iMax > self->cValues)
 		iMax = self->cValues;
 	if (iMax < iFirst)
 		iMax = iFirst;
-
-    if (iFirst == 0 && iMax == self->cValues)
-    {
-        Py_INCREF(o);
-        return o;
-    }
-    
+ 
+	if (iFirst == 0 && iMax == self->cValues)
+	{
+		Py_INCREF(o);
+		return o;
+	}
+	
 	Py_ssize_t len = iMax - iFirst;
-    PyObject* result = PyTuple_New(len);
+	PyObject* result = PyTuple_New(len);
 	if (!result)
 		return 0;
-
-    for (Py_ssize_t i = 0; i < len; i++)
-    {
-        PyObject* item = self->apValues[iFirst + i];
-        PyTuple_SET_ITEM(result, i, item);
-        Py_INCREF(item);
-    }
-    
-    return result;
+ 
+	for (Py_ssize_t i = 0; i < len; i++)
+	{
+		PyObject* item = self->apValues[iFirst + i];
+		PyTuple_SET_ITEM(result, i, item);
+		Py_INCREF(item);
+	}
+	
+	return result;
 }
 
-static PyObject *
-Row_repr(PyObject* o)
+static PyObject* Row_repr(PyObject* o)
 {
     Row* self = (Row*)o;
 
     if (self->cValues == 0)
-        return PyString_FromString("()");
+        return PyUnicode_FromString("()");
 
-    Object pieces = PyTuple_New(self->cValues);
+    // Build a temporary tuple and have it generate the string.  We set all of the tuple items back to zero so we don't
+    // have to deal with reference counts.
+
+    PyObject* pieces = PyTuple_New(self->cValues);
     if (!pieces)
         return 0;
 
     for (Py_ssize_t i = 0; i < self->cValues; i++)
-    {
-        PyObject* piece = PyObject_Repr(self->apValues[i]);
-        if (!piece)
-            return 0;
-        PyTuple_SET_ITEM(pieces.Get(), i, piece);
-	}
+        PyTuple_SET_ITEM(pieces, i, self->apValues[i]);
 
-    Object sep = PyString_FromString(", ");
-    if (!sep)
-        return 0;
+    PyObject* result = PyObject_Repr(pieces);
 
-    Object s = _PyString_Join(sep, pieces);
-    if (!s)
-        return 0;
+    for (Py_ssize_t i = 0; i < self->cValues; i++)
+        PyTuple_SET_ITEM(pieces, i, 0);
 
-    const char* szWrapper = (self->cValues == 1) ? "(%s, )" : "(%s)";
+    Py_DECREF(pieces);
 
-    Object result = PyString_FromFormat(szWrapper, PyString_AsString(s.Get()));
-    return result.Detach();
+    return result;
 }
 
 static PyObject* Row_richcompare(PyObject* olhs, PyObject* orhs, int op)
@@ -298,7 +331,7 @@ static PySequenceMethods row_as_sequence =
     0,                                 // sq_repeat
     (ssizeargfunc)Row_item,            // sq_item
     Row_slice,                         // sq_slice
-	(ssizeobjargproc)Row_ass_item,     // sq_ass_item
+	0, // (ssizeobjargproc)Row_ass_item,     // sq_ass_item
     0,                                 // sq_ass_slice
     (objobjproc)Row_contains,          // sq_contains
 };
@@ -311,6 +344,11 @@ static PyMemberDef Row_members[] =
     { 0 }
 };
 
+static PyMappingMethods row_as_mapping = {
+	(lenfunc)Row_length,
+	(binaryfunc)Row_subscript,
+	0
+};
 
 static char row_doc[] =
     "Row objects are sequence objects that hold query results.\n" 
@@ -340,7 +378,6 @@ static char row_doc[] =
 PyTypeObject RowType =
 {
 	PyObject_HEAD_INIT(0)
-    0,                                                      // ob_size                                        
     "pyodbc.Row",                                           // tp_name
     sizeof(Row),                                            // tp_basicsize
     0,                                                      // tp_itemsize
@@ -352,7 +389,7 @@ PyTypeObject RowType =
     Row_repr,                                               // tp_repr
     0,                                                      // tp_as_number
 	&row_as_sequence,                                       // tp_as_sequence
-    0,                                                      // tp_as_mapping
+    &row_as_mapping,                                        // tp_as_mapping
     0,                                                      // tp_hash
     0,                                                      // tp_call
     0,                                                      // tp_str

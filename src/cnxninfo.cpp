@@ -14,8 +14,7 @@
 //
 static PyObject* map_hash_to_info;
 
-static PyObject* hashlib;       // The hashlib module if Python 2.5+
-static PyObject* sha;           // The sha module if Python 2.4
+static PyObject* hashlib;       // The hashlib module
 static PyObject* update;        // The string 'update', used in GetHash.
 
 void CnxnInfo_init()
@@ -27,18 +26,13 @@ void CnxnInfo_init()
     // caller.
 
     map_hash_to_info = PyDict_New();
-
-    update = PyString_FromString("update");
-
-    hashlib = PyImport_ImportModule("hashlib");
-    if (!hashlib)
-    {
-        sha = PyImport_ImportModule("sha");
-    }
+    // update = PyUnicode_FromString("update");
+    // hashlib = PyImport_ImportModule("hashlib");
 }
 
 static PyObject* GetHash(PyObject* p)
 {
+    /*
     if (hashlib)
     {
         Object hash(PyObject_CallMethod(hashlib, "new", "s", "sha1"));
@@ -48,17 +42,8 @@ static PyObject* GetHash(PyObject* p)
         PyObject_CallMethodObjArgs(hash, update, p, 0);
         return PyObject_CallMethod(hash, "hexdigest", 0);
     }
+    */
     
-    if (sha)
-    {
-        Object hash(PyObject_CallMethod(sha, "new", 0));
-        if (!hash.IsValid())
-            return 0;
-        
-        PyObject_CallMethodObjArgs(hash, update, p, 0);
-        return PyObject_CallMethod(hash, "hexdigest", 0);
-    }
-
     return 0;
 }
 
@@ -183,7 +168,6 @@ PyObject* GetConnectionInfo(PyObject* pConnectionString, Connection* cnxn)
 PyTypeObject CnxnInfoType =
 {
     PyObject_HEAD_INIT(0)
-    0,                                                      // ob_size
     "pyodbc.CnxnInfo",                                      // tp_name
     sizeof(CnxnInfo),                                       // tp_basicsize
     0,                                                      // tp_itemsize
