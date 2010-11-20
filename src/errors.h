@@ -2,6 +2,11 @@
 #ifndef _ERRORS_H_
 #define _ERRORS_H_
 
+// SQLSTATE values are always 5-character ANSI strings (see SQL/92 specification).  pyodbc uses 'char' instead of
+// 'SQLWCHAR' since there is no literal syntax for SQLWCHAR (it is not necessarily the same as wchar_t, so L"xxxxx"
+// does not work).
+
+
 // Sets an exception based on the ODBC SQLSTATE and error message and returns zero.  If either handle is not available,
 // pass SQL_NULL_HANDLE.
 //
@@ -13,7 +18,7 @@ PyObject* RaiseErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt);
 
 // Sets an exception using a printf-like error message.
 //
-// szSqlState
+// sqlstate
 //   The optional SQLSTATE reported by ODBC.  If not provided (sqlstate is NULL or sqlstate[0] is NULL), "HY000"
 //   (General Error) is used.  Note that HY000 causes Error to be used if exc_class is not provided.
 //
@@ -21,7 +26,7 @@ PyObject* RaiseErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt);
 //   The optional exception class (DatabaseError, etc.) to construct.  If NULL, the appropriate class will be
 //   determined from the SQLSTATE.
 //
-PyObject* RaiseErrorV(const SQLWCHAR* sqlstate, PyObject* exc_class, const char* format, ...);
+PyObject* RaiseErrorV(const char* sqlstate, PyObject* exc_class, const char* format, ...);
 
 PyObject* RaiseError(PyObject* exc_class, const char* szFormat, ...);
 

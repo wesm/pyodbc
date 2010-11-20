@@ -9,7 +9,7 @@
 
 struct SqlStateMapping
 {
-    SQLWCHAR* prefix;
+    const char* prefix;
     int   prefix_len;
     PyObject** pexc_class;      // Note: Double indirection (pexc_class) necessary because the pointer values are not
                                 // initialized during startup
@@ -17,19 +17,19 @@ struct SqlStateMapping
 
 static const struct SqlStateMapping sql_state_mapping[] =
 {
-    { L"0A000", 5, &NotSupportedError },
-    { L"40002", 5, &IntegrityError },
-    { L"22",    2, &DataError },
-    { L"23",    2, &IntegrityError },
-    { L"24",    2, &ProgrammingError },
-    { L"25",    2, &ProgrammingError },
-    { L"42",    2, &ProgrammingError },
-    { L"HYT00", 5, &OperationalError },
-    { L"HYT01", 5, &OperationalError },
+    { "0A000", 5, &NotSupportedError },
+    { "40002", 5, &IntegrityError },
+    { "22",    2, &DataError },
+    { "23",    2, &IntegrityError },
+    { "24",    2, &ProgrammingError },
+    { "25",    2, &ProgrammingError },
+    { "42",    2, &ProgrammingError },
+    { "HYT00", 5, &OperationalError },
+    { "HYT01", 5, &OperationalError },
 };
 
 
-static PyObject* ExceptionFromSqlState(const SQLWCHAR* sqlstate)
+static PyObject* ExceptionFromSqlState(const char* sqlstate)
 {
     // Returns the appropriate Python exception class given a SQLSTATE value.
 
@@ -61,18 +61,16 @@ PyObject* RaiseError(PyObject* exc_class, const char* format, ...)
 }
 
 
-PyObject* RaiseErrorV(const SQLWCHAR* sqlstate, PyObject* exc_class, const char* format, ...)
+PyObject* RaiseErrorV(const char* sqlstate, PyObject* exc_class, const char* format, ...)
 {
-    PyObject *pAttrs = 0, *pError = 0;
-
     if (!sqlstate || !*sqlstate)
-        sqlstate = L"HY000";
+        sqlstate = "HY000";
 
     if (!exc_class)
         exc_class = ExceptionFromSqlState(sqlstate);
 
-    // Note: Don't use any native strprintf routines.  With Py_ssize_t, we need "%zd", but VC .NET doesn't support it.
-    // PyString_FromFormatV already takes this into account.
+    // Note: Don't use any native strprintf routines.  With Py_ssize_t, we need "%zd", but Visual Studio .NET doesn't
+    // support it.  PyUnicode_FromFormatV already takes this into account.
 
     va_list marker;
     va_start(marker, format);
@@ -84,29 +82,30 @@ PyObject* RaiseErrorV(const SQLWCHAR* sqlstate, PyObject* exc_class, const char*
         return 0;
     }
 
-    // Create an exception with a 'sqlstate' attribute (set to None if we don't have one) whose 'args' attribute is a
-    // tuple containing the message and sqlstate value.  The 'sqlstate' attribute ensures it is easy to access in
-    // Python (and more understandable to the reader than ex.args[1]), but putting it in the args ensures it shows up
-    // in logs because of the default repr/str.
+    // Create an exception with a 'sqlstate' attribute whose 'args' attribute is a tuple containing the message and
+    // sqlstate value.  The 'sqlstate' attribute ensures it is easy to access in Python (and more understandable to the
+    // reader than ex.args[1]), but putting it in the args ensures it shows up in logs because of the default repr/str.
 
-    pAttrs = Py_BuildValue("(Os)", pMsg, sqlstate);
+    PyObject* pAttrs = Py_BuildValue("(Os)", pMsg, sqlstate);
     if (pAttrs)
     {
-        pError = PyEval_CallObject(exc_class, pAttrs);
+        PyObject* pError = PyEval_CallObject(exc_class, pAttrs);
         if (pError)
+        {
             RaiseErrorFromException(pError);
+            Py_DECREF(pError);
+        }
+        Py_DECREF(pAttrs);
     }
     
     Py_DECREF(pMsg);
-    Py_XDECREF(pAttrs);
-    Py_XDECREF(pError);
 
     return 0;
 }
 
 
 
-bool HasSqlState(PyObject* ex, const SQLWCHAR* szSqlState)
+bool HasSqlState(PyObject* ex, const char* sqlstate)
 {
     // Returns true if `ex` is an exception and has the given SQLSTATE.  It is safe to pass 0 for ex.
 
@@ -118,13 +117,11 @@ bool HasSqlState(PyObject* ex, const SQLWCHAR* szSqlState)
         if (args != 0)
         {
             PyObject* s = PySequence_GetItem(args, 1);
-            if (s != 0 && PyUnicode_Check(s))
+            if (PyUnicode_Check(s))
             {
-                const Py_UNICODE* sz = PyUnicode_AsUnicode(s);
-                if (sz && SQLWCHAR_Same(szSqlState, sz))
-                    has = true;
+                has = (PyUnicode_CompareWithASCIIString(s, sqlstate) == 0);
+                Py_DECREF(s);
             }
-            Py_XDECREF(s);
             Py_DECREF(args);
         }
     }
@@ -133,7 +130,7 @@ bool HasSqlState(PyObject* ex, const SQLWCHAR* szSqlState)
 }
 
 
-static PyObject* GetError(const SQLWCHAR* sqlstate, PyObject* exc_class, PyObject* pMsg)
+static PyObject* GetError(const char* sqlstate, PyObject* exc_class, PyObject* pMsg)
 {
     // pMsg
     //   The error message.  This function takes ownership of this object, so we'll free it if we fail to create an
@@ -142,7 +139,7 @@ static PyObject* GetError(const SQLWCHAR* sqlstate, PyObject* exc_class, PyObjec
     PyObject *pSqlState=0, *pAttrs=0, *pError=0;
 
     if (!sqlstate || !*sqlstate)
-        sqlstate = L"HY000";
+        sqlstate = "HY000";
 
     if (!exc_class)
         exc_class = ExceptionFromSqlState(sqlstate);
@@ -156,7 +153,7 @@ static PyObject* GetError(const SQLWCHAR* sqlstate, PyObject* exc_class, PyObjec
     
     PyTuple_SetItem(pAttrs, 1, pMsg); // pAttrs now owns the pMsg reference; steals a reference, does not increment
 
-    pSqlState = PyUnicode_FromSQLWCHAR(sqlstate);
+    pSqlState = PyUnicode_FromString(sqlstate);
     if (!pSqlState)
     {
         Py_DECREF(pAttrs);
@@ -207,7 +204,7 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
     SQLSMALLINT nHandleType;
     SQLHANDLE   h;
 
-    SQLWCHAR sqlstate[6] = L"";
+    char sqlstate[6] = "";
     SQLINTEGER nNativeError;
     SQLSMALLINT cchMsg;
 
@@ -260,7 +257,7 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
             {
                 // This is the first error message, so save the SQLSTATE for determining the exception class and append
                 // the calling function name.
-                memcpy(sqlstate, sqlstateT, sizeof(sqlstate[0]) * _countof(sqlstate));
+                copy_sqlstate(sqlstate, sqlstateT);
             }
             else
             {
@@ -296,7 +293,7 @@ PyObject* GetErrorFromHandle(const char* szFunction, HDBC hdbc, HSTMT hstmt)
     return GetError(sqlstate, 0, msg.Detach());
 }
 
-static bool GetSqlState(HSTMT hstmt, char* szSqlState)
+static bool GetSqlState(HSTMT hstmt, char* sqlstate)
 {
     SQLCHAR szMsg[300];
     SQLSMALLINT cbMsg = (SQLSMALLINT)(_countof(szMsg) - 1);
@@ -305,15 +302,15 @@ static bool GetSqlState(HSTMT hstmt, char* szSqlState)
     SQLRETURN ret;
 
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, (SQLCHAR*)szSqlState, &nNative, szMsg, cbMsg, &cchMsg);
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, (SQLCHAR*)sqlstate, &nNative, szMsg, cbMsg, &cchMsg);
     Py_END_ALLOW_THREADS
     return SQL_SUCCEEDED(ret);
 }
 
-bool HasSqlState(HSTMT hstmt, const char* szSqlState)
+bool HasSqlState(HSTMT hstmt, const char* sqlstate)
 {
     char szActual[6];
     if (!GetSqlState(hstmt, szActual))
         return false;
-    return memcmp(szActual, szSqlState, 5) == 0;
+    return memcmp(szActual, sqlstate, 5) == 0;
 }

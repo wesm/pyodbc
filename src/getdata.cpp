@@ -640,6 +640,6 @@ GetData(Cursor* cur, Py_ssize_t iCol)
         return GetSqlServerTime(cur, iCol);
     }
 
-    return RaiseErrorV(L"HY106", ProgrammingError, "ODBC SQL type %d is not yet supported.  column-index=%zd  type=%d",
+    return RaiseErrorV("HY106", ProgrammingError, "ODBC SQL type %d is not yet supported.  column-index=%zd  type=%d",
                        (int)pinfo->sql_type, iCol, (int)pinfo->sql_type);
 }

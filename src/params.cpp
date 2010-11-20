@@ -447,7 +447,7 @@ static bool GetParameterInfo(Cursor* cur, Py_ssize_t index, PyObject* param, Par
     if (PyBytes_Check(param))
         return GetBytesInfo(cur, index, param, info);
 
-    RaiseErrorV(L"HY105", ProgrammingError, "Invalid parameter type.  param-index=%zd param-type=%s", index, param->ob_type->tp_name);
+    RaiseErrorV("HY105", ProgrammingError, "Invalid parameter type.  param-index=%zd param-type=%s", index, param->ob_type->tp_name);
     return false;
 }
 

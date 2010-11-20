@@ -193,3 +193,10 @@ bool SQLWCHAR_Same(const SQLWCHAR* lhs, const Py_UNICODE* rhs)
     return *rhs == 0;
 }
 
+void copy_sqlstate(char* dest, const SQLWCHAR* src)
+{
+    for (int i = 0; i < 5; i++)
+        dest[i] = (char)(src[i] & 0xFF);
+    dest[5] = 0;
+}
+

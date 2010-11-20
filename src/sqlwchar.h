@@ -67,4 +67,8 @@ inline bool UnicodeSizesDiffer()
 
 bool SQLWCHAR_Same(const SQLWCHAR* lhs, const Py_UNICODE* rhs);
 
+// This copies the low bytes, and should only be used when the text is *known* to be ANSI.
+void copy_sqlstate(char* dest, const SQLWCHAR* src);
+
+
 #endif // _PYODBCSQLWCHAR_H
