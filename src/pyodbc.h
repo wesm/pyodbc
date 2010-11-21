@@ -51,6 +51,8 @@ typedef unsigned long long UINT64;
 //
 // We could initialize PyDateTimeAPI in each module, but we don't have a function in each module that is guaranteed to
 // be called first and I don't want to create an Init function just for this datetime bug.
+//
+// (Also, it creates an annoying warning in GCC.)
 
 #undef PyDate_Check
 #undef PyDate_CheckExact

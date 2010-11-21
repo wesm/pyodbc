@@ -87,8 +87,9 @@ struct Unicode : public Object
 
     bool Append(long l)
     {
-        Object other(PyLong_FromLong(l));
-        return Append(other);
+        Object longObj(PyLong_FromLong(l));
+        Object unicodeObj = _PyLong_Format(longObj, 10);
+        return Append(unicodeObj);
     }
 
     Py_ssize_t Size()

@@ -14,8 +14,8 @@
 //
 static PyObject* map_hash_to_info;
 
-static PyObject* hashlib;       // The hashlib module
-static PyObject* update;        // The string 'update', used in GetHash.
+// static PyObject* hashlib;       // The hashlib module
+// static PyObject* update;        // The string 'update', used in GetHash.
 
 void CnxnInfo_init()
 {
@@ -167,7 +167,7 @@ PyObject* GetConnectionInfo(PyObject* pConnectionString, Connection* cnxn)
 
 PyTypeObject CnxnInfoType =
 {
-    PyObject_HEAD_INIT(0)
+    PyVarObject_HEAD_INIT(NULL, 0)
     "pyodbc.CnxnInfo",                                      // tp_name
     sizeof(CnxnInfo),                                       // tp_basicsize
     0,                                                      // tp_itemsize

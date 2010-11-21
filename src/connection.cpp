@@ -17,6 +17,7 @@
 #include "wrapper.h"
 #include "cnxninfo.h"
 #include "sqlwchar.h"
+#include "pyodbcdbg.h"
 
 static char connection_doc[] =
     "Connection objects manage connections to the database.\n"
@@ -60,7 +61,7 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, long timeout)
 
     SQLWChar connectString(pConnectString);
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLDriverConnectW(hdbc, 0, connectString, (SQLSMALLINT)connectString.size(), 0, 0, 0, SQL_DRIVER_NOPROMPT);
+        ret = SQLDriverConnectW(hdbc, 0, (SQLWCHAR*)connectString, (SQLSMALLINT)connectString.size(), 0, 0, 0, SQL_DRIVER_NOPROMPT);
     Py_END_ALLOW_THREADS
     if (SQL_SUCCEEDED(ret))
         return true;
@@ -885,7 +886,7 @@ static PyGetSetDef Connection_getseters[] = {
 
 PyTypeObject ConnectionType =
 {
-    PyObject_HEAD_INIT(0)
+    PyVarObject_HEAD_INIT(NULL, 0)
     "pyodbc.Connection",                                    // tp_name
     sizeof(Connection),                                     // tp_basicsize
     0,                                                      // tp_itemsize

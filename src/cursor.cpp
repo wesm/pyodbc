@@ -1990,7 +1990,7 @@ static char cursor_doc[] =
     
 PyTypeObject CursorType =
 {
-    PyObject_HEAD_INIT(0)
+    PyVarObject_HEAD_INIT(NULL, 0)
     "pyodbc.Cursor",                                        // tp_name
     sizeof(Cursor),                                         // tp_basicsize
     0,                                                      // tp_itemsize

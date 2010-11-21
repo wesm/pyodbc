@@ -194,7 +194,7 @@ public:
             return PyUnicode_FromSQLWCHAR((const SQLWCHAR*)buffer, bytesUsed / element_size);
         }
 
-        if (PyBytes_CheckExact(bufferOwner))
+        if (bufferOwner && PyBytes_CheckExact(bufferOwner))
         {
             if (_PyBytes_Resize(&bufferOwner, bytesUsed) == -1)
                 return 0;
@@ -204,7 +204,7 @@ public:
             return tmp;
         }
 
-        if (PyUnicode_CheckExact(bufferOwner))
+        if (bufferOwner && PyUnicode_CheckExact(bufferOwner))
         {
             if (PyUnicode_Resize(&bufferOwner, bytesUsed / element_size) == -1)
                 return 0;
@@ -224,8 +224,8 @@ public:
     }
 };
 
-static PyObject*
-GetDataString(Cursor* cur, Py_ssize_t iCol)
+
+static PyObject* GetDataString(Cursor* cur, Py_ssize_t iCol)
 {
     // Returns a Bytes or Unicode object for character and binary data.
 
@@ -436,16 +436,20 @@ GetDataBit(Cursor* cur, Py_ssize_t iCol)
     Py_RETURN_FALSE;
 }
 
-static PyObject*
-GetDataLong(Cursor* cur, Py_ssize_t iCol)
+static PyObject* GetDataLong(Cursor* cur, Py_ssize_t iCol)
 {
     ColumnInfo* pinfo = &cur->colinfos[iCol];
 
+#if (SIZEOF_LONG_INT == 8) 
+    SQLSMALLINT nCType = pinfo->is_unsigned ? SQL_C_UBIGINT : SQL_C_SBIGINT;
+    long long value = 0;
+#else 
+    SQLSMALLINT nCType = pinfo->is_unsigned ? SQL_C_ULONG : SQL_C_LONG;
     long value = 0;
+#endif     
+
     SQLLEN cbFetched = 0;
     SQLRETURN ret;
-
-    SQLSMALLINT nCType = pinfo->is_unsigned ? SQL_C_ULONG : SQL_C_LONG;
 
     Py_BEGIN_ALLOW_THREADS
     ret = SQLGetData(cur->hstmt, (SQLSMALLINT)(iCol+1), nCType, &value, sizeof(value), &cbFetched);
@@ -456,10 +460,17 @@ GetDataLong(Cursor* cur, Py_ssize_t iCol)
     if (cbFetched == SQL_NULL_DATA)
         Py_RETURN_NONE;
 
+#if (SIZEOF_LONG_INT == 8) 
+    if (pinfo->is_unsigned)
+        return PyLong_FromUnsignedLongLong((unsigned long long)value);
+
+    return PyLong_FromLongLong(value);
+#else
     if (pinfo->is_unsigned)
         return PyLong_FromUnsignedLong((unsigned long)value);
 
     return PyLong_FromLong(value);
+#endif
 }
 
 static PyObject* GetDataLongLong(Cursor* cur, Py_ssize_t iCol)

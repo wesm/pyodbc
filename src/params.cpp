@@ -258,8 +258,6 @@ static bool GetLongInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInf
     // If you look through the longobject code, it isn't very efficient at all.  I would have thought something like
     // AsLongAndOverflow would be easy, but apparenlty not.
 
-    long long value = PyLong_AsLongLong(param);
-
     info.Data.i64 = (SQLBIGINT)PyLong_AsLongLong(param);
 
     info.ValueType         = SQL_C_SBIGINT;

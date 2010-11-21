@@ -1,11 +1,39 @@
 
 #include "pyodbc.h"
 
-void PrintBytes(void* p, size_t len)
+static const char* hexdigits = "0123456789ABCDEF";
+
+void HexDump(const char* name, const void* buffer, int len)
 {
-    unsigned char* pch = (unsigned char*)p;
-    for (size_t i = 0; i < len; i++)
-        printf("%02x ", (int)pch[i]);
+    // A debugging utility that prints a buffer to the screen in two columns: hex and ASCII.
+
+    printf("%s (%d)\n", name, len);
+
+    const unsigned char* pb = (const unsigned char *)buffer;
+    const unsigned char* pbMax = pb + len;
+
+    char hexstr[10 * 3 + 1];
+    char asciistr[10 * 2 + 1];
+
+    while (pb < pbMax)
+    {
+        memset(hexstr, ' ', sizeof(hexstr));
+        memset(asciistr, ' ', sizeof(asciistr));
+        hexstr[sizeof(hexstr)-1] = 0;
+        asciistr[sizeof(asciistr)-1] = 0;
+
+        for (int i = 0; i < 10 && pb < pbMax; i++, pb++)
+        {
+            hexstr[(i*3)+0] = hexdigits[(*pb >> 4) & 0x0F];
+            hexstr[(i*3)+1] = hexdigits[(*pb) & 0x0F];
+
+            if (isprint(*pb))
+                asciistr[(i*2) + 0] = (char)*pb;
+            else
+                asciistr[(i*2) + 0] = '.';
+        }
+        printf("%s  %s\n", hexstr, asciistr);
+    }
     printf("\n");
 }
 

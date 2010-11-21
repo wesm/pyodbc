@@ -288,7 +288,7 @@ static PyObject* Row_richcompare(PyObject* olhs, PyObject* orhs, int op)
     if (lhs->cValues != rhs->cValues)
     {
         // Different sizes, so use the same rules as the tuple class.
-        bool result;
+        bool result = false; // (initialized to eliminate compiler warnings)
 		switch (op)
         {
 		case Py_EQ: result = (lhs->cValues == rhs->cValues); break;
@@ -324,13 +324,13 @@ static PyObject* Row_richcompare(PyObject* olhs, PyObject* orhs, int op)
     Py_RETURN_FALSE;
 }
 
-static PySequenceMethods row_as_sequence =
+static PySequenceMethods row_as_sequence = 
 {
-    (lenfunc)Row_length,               // sq_length
-    0,                                 // sq_concat
-    0,                                 // sq_repeat
-    (ssizeargfunc)Row_item,            // sq_item
-    Row_slice,                         // sq_slice
+    (lenfunc)Row_length,        // sq_length
+    0,                          // sq_concat
+    0,                          // sq_repeat
+    (ssizeargfunc)Row_item,     // sq_item
+    0, //Row_slice,                         // was_sq_slice
 	0, // (ssizeobjargproc)Row_ass_item,     // sq_ass_item
     0,                                 // sq_ass_slice
     (objobjproc)Row_contains,          // sq_contains
@@ -377,7 +377,7 @@ static char row_doc[] =
   
 PyTypeObject RowType =
 {
-	PyObject_HEAD_INIT(0)
+    PyVarObject_HEAD_INIT(NULL, 0)
     "pyodbc.Row",                                           // tp_name
     sizeof(Row),                                            // tp_basicsize
     0,                                                      // tp_itemsize
