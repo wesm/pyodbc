@@ -118,19 +118,19 @@ static bool GetBytesInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamIn
 {
     Py_ssize_t len = PyBytes_GET_SIZE(param);
 
-    info.ValueType  = SQL_C_CHAR;
+    info.ValueType  = SQL_C_BINARY;
     info.ColumnSize = max(len, 1);
 
     if (len <= cur->cnxn->varchar_maxlength)
     {
-        info.ParameterType     = SQL_VARCHAR;
+        info.ParameterType     = SQL_VARBINARY;
         info.StrLen_or_Ind     = len;
         info.ParameterValuePtr = PyBytes_AS_STRING(param);
     }
     else
     {
         // Too long to pass all at once, so we'll provide the data at execute.
-        info.ParameterType     = SQL_LONGVARCHAR;
+        info.ParameterType     = SQL_LONGVARBINARY;
         info.StrLen_or_Ind     = SQL_LEN_DATA_AT_EXEC((SQLLEN)len);
         info.ParameterValuePtr = param;
     }
