@@ -90,6 +90,12 @@ class SqlServerTestCase(unittest.TestCase):
             except:
                 pass
 
+        try:
+            self.cursor.execute('drop function func1')
+            self.cnxn.commit()
+        except:
+            pass
+
         self.cnxn.rollback()
 
     def tearDown(self):
@@ -1187,6 +1193,21 @@ class SqlServerTestCase(unittest.TestCase):
         hundredkb = bytes('x'*100*1024, 'ascii')
         self.cursor.execute('update t1 set a=? where 1=0', (hundredkb,))
 
+    def test_func_param(self):
+        self.cursor.execute('''
+                            create function func1 (@testparam varchar(4)) 
+                            returns @rettest table (param varchar(4))
+                            as 
+                            begin
+                                insert @rettest
+                                select @testparam
+                                return
+                            end
+                            ''')
+        self.cnxn.commit()
+        value = self.cursor.execute("select * from func1(?)", 'test').fetchone()[0]
+        self.assertEquals(value, 'test')
+        
 
 def main():
     from optparse import OptionParser
