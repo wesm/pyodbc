@@ -531,7 +531,7 @@ Connection_getinfo(PyObject* self, PyObject* args)
             return 0;
         }
 
-        return PyUnicode_FromSQLWCHAR(buffer, length);
+        return PyUnicode_FromSQLWCHAR(buffer, length/2);
     }
         
     case GI_UINTEGER:

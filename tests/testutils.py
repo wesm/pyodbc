@@ -1,6 +1,6 @@
 
 import os, sys, platform
-from os.path import join, dirname, abspath
+from os.path import join, dirname, abspath, basename
 import unittest
 
 def add_to_path():
@@ -47,7 +47,7 @@ def print_library_info(cnxn):
     print('unicode: Py_Unicode={0} SQLWCHAR={1}'.format(pyodbc.UNICODE_SIZE, pyodbc.SQLWCHAR_SIZE))
 
     if platform.system() == 'Windows':
-        print('        {0}'.format(' '.join([s for s in platform.win32_ver() if s])))
+        print('         {0}'.format(' '.join([s for s in platform.win32_ver() if s])))
 
 
 

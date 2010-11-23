@@ -4,6 +4,9 @@
 
 class SQLWChar
 {
+    // An object designed to convert strings and Unicode objects to SQLWCHAR, hold the temporary buffer, and delete it
+    // in the destructor.
+
 private:
     SQLWCHAR* pch;
     Py_ssize_t len;
@@ -48,27 +51,36 @@ public:
     }
 };
 
-#if defined(MS_WIN32) && Py_UNICODE_SIZE == 2
-inline PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* s) { return PyUnicode_FromWideChar((const wchar_t*)s, wcslen(s)); }
-inline PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* s, size_t l) { return PyUnicode_FromWideChar((const wchar_t*)s, l); }
-#else
-PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz);
+// Allocate a new Unicode object, initialized from the given SQLWCHAR string.
 PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* sz, Py_ssize_t cch);
-#endif
 
-bool sqlwchar_copy(SQLWCHAR* pdest, const Py_UNICODE* psrc, Py_ssize_t len);
-
-SQLWCHAR* SQLWCHAR_FromUnicode(const Py_UNICODE* pch, Py_ssize_t len);
-
-inline bool UnicodeSizesDiffer() 
+inline Py_ssize_t sqlwcslen(const SQLWCHAR* s)
 {
-    return sizeof(SQLWCHAR) != sizeof(Py_UNICODE);
+#if SQLWCHAR_SIZE == Py_UNICODE_SIZE
+    return Py_UNICODE_strlen((const Py_UNICODE*)s);
+#elif defined(HAVE_WCHAR) && SQLWCHAR_SIZE == WCHAR_T_SIZE
+    return wcslen((const wchar_t*)s);
+#else
+    Py_ssize_t len = 0;
+    while (*s++ != 0)
+        len++;
+    return len;
+#endif
 }
+
+inline PyObject* PyUnicode_FromSQLWCHAR(const SQLWCHAR* s)
+{
+    return PyUnicode_FromSQLWCHAR(s, sqlwcslen(s));
+}
+
+#if SQLWCHAR_SIZE != Py_UNCODE_SIZE
+SQLWCHAR* SQLWCHAR_FromUnicode(const Py_UNICODE* pch, Py_ssize_t len);
+#endif
 
 bool SQLWCHAR_Same(const SQLWCHAR* lhs, const Py_UNICODE* rhs);
 
 // This copies the low bytes, and should only be used when the text is *known* to be ANSI.
 void copy_sqlstate(char* dest, const SQLWCHAR* src);
 
-
 #endif // _PYODBCSQLWCHAR_H
+
