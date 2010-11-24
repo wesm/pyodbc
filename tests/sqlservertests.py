@@ -1208,6 +1208,15 @@ class SqlServerTestCase(unittest.TestCase):
         value = self.cursor.execute("select * from func1(?)", 'test').fetchone()[0]
         self.assertEquals(value, 'test')
         
+    def test_drivers(self):
+        drivers = pyodbc.drivers()
+        self.assertEqual(list, type(drivers))
+        self.assert_(len(drivers) > 1)
+
+        m = re.search('DRIVER={([^}]+)}', self.connection_string, re.IGNORECASE)
+        current = m.group(1)
+        self.assert_(current in drivers)
+            
 
 def main():
     from optparse import OptionParser

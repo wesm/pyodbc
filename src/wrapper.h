@@ -55,6 +55,7 @@ struct Object
     }
 };
 
+
 struct Unicode : public Object
 {
     bool Append(PyObject* other)
@@ -101,4 +102,26 @@ struct Unicode : public Object
 };
 
 
+
+#ifdef WINVER
+struct RegKey
+{
+    HKEY hkey;
+
+    RegKey()
+    {
+        hkey = 0;
+    }
+
+    ~RegKey()
+    {
+        if (hkey != 0)
+            RegCloseKey(hkey);
+    }
+
+    operator HKEY() { return hkey; }
+};
+#endif
+
 #endif // _WRAPPER_H_
+
