@@ -246,7 +246,7 @@ def get_version():
       1. If in a git repository, use the latest tag (git describe).
       2. If in an unzipped source directory (from setup.py sdist),
          read the version from the PKG-INFO file.
-      3. Use 2.1.0.0 and complain a lot.
+      3. Use 3.0.0.0 and complain a lot.
     """
     # My goal is to (1) provide accurate tags for official releases but (2) not have to manage tags for every test
     # release.
@@ -274,8 +274,8 @@ def get_version():
         name, numbers = _get_version_git()
 
     if not numbers:
-        _print('WARNING: Unable to determine version.  Using 2.1.0.0')
-        name, numbers = '2.1.0-unsupported', [2,1,0,0]
+        _print('WARNING: Unable to determine version.  Using 3.0.0.0')
+        name, numbers = '3.0.0-unsupported', [3,0,0,0]
 
     return name, numbers
             
@@ -296,7 +296,7 @@ def _get_version_pkginfo():
 
 
 def _get_version_git():
-    n, result = getoutput('git describe --tags --match 2.*')
+    n, result = getoutput('git describe --tags --match 3.*')
     if n:
         _print('WARNING: git describe failed with: %s %s' % (n, result))
         return None, None
