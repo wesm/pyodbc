@@ -340,7 +340,7 @@ static PyObject* Row_subscript(PyObject* o, PyObject* key)
     if (PySlice_Check(key))
     {
         Py_ssize_t start, stop, step, slicelength;
-#if PY_MAJOR_VERSION >= 3
+#if PY_VERSION_HEX >= 0x03020000
         if (PySlice_GetIndicesEx(key, row->cValues, &start, &stop, &step, &slicelength) < 0)
             return 0;
 #else
