@@ -4,7 +4,7 @@
  * documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
  * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
  * WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
  * OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
@@ -26,19 +26,28 @@ typedef unsigned int UINT;
 typedef long long INT64;
 typedef unsigned long long UINT64;
 #define _strcmpi strcasecmp
+
+#ifdef __cplusplus
+  #include <complex>
+#else
+  #include <complex.h>
+#endif
+
+
 #ifdef __MINGW32__
   #include <windef.h>
   #include <malloc.h>
 #else
   inline int max(int lhs, int rhs) { return (rhs > lhs) ? rhs : lhs; }
 #endif
+
 #endif
 
 #ifdef __SUN__
 #include <alloca.h>
 #endif
 
-#define PY_SSIZE_T_CLEAN 1
+// #define PY_SSIZE_T_CLEAN 1
 
 #include <Python.h>
 #include <stringobject.h>
@@ -147,7 +156,7 @@ inline void _strlwr(char* name)
 
 #ifdef PYODBC_TRACE
 void CDECL DebugTrace(const char* szFmt, ...);
-#else  
+#else
 inline void DebugTrace(const char* szFmt, ...) { UNUSED(szFmt); }
 #endif
 #define TRACE DebugTrace
